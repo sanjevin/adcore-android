@@ -35,6 +35,10 @@ public class AdcoreSyncService extends Service {
         context.startService(intent);
     }
 
+    public static boolean isRunning() {
+        return RUNNING.get();
+    }
+
     @Override
     public int onStartCommand(final Intent intent, int flags, final int startId) {
         if (intent == null) {

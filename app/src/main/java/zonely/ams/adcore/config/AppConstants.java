@@ -17,7 +17,6 @@ public final class AppConstants {
     public static final String MARKER_LAST_DAILY_SYNC_SUCCESS = "last_daily_sync_success_at";
     public static final String MARKER_LAST_AUDIT_SENT_DATE = "last_audit_sent_date";
     public static final String MARKER_LAST_UPDATE_CHECK_DATE = "last_update_check_date";
-
     public static final String CONFIG_API_RETRY_DELAY_SEC = "api_retry_delay_sec";
     public static final String CONFIG_API_RETRY_MAX = "api_retry_max";
     public static final String CONFIG_BACKGROUND_RETRY_DELAY_SEC = "background_retry_delay_sec";

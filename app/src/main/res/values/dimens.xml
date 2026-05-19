@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="screen_padding">40dp</dimen>
+    <dimen name="splash_logo_size">160dp</dimen>
+    <dimen name="login_panel_width">500dp</dimen>
+    <dimen name="login_spinner_size">72dp</dimen>
+    <dimen name="inline_spinner_size">42dp</dimen>
+    <dimen name="sync_horizontal_padding">48dp</dimen>
+    <dimen name="sync_vertical_padding">38dp</dimen>
+    <dimen name="progress_bar_height">8dp</dimen>
+    <dimen name="progress_row_vertical_padding">12dp</dimen>
+    <dimen name="ads_device_id_max_width">840dp</dimen>
+</resources>

@@ -4,14 +4,14 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.view.Gravity;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.LinkedHashMap;
@@ -19,18 +19,25 @@ import java.util.Map;
 
 import androidx.core.content.ContextCompat;
 
+import zonely.ams.adcore.R;
 import zonely.ams.adcore.data.AdcoreDatabase;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.scheduler.AdcoreScheduler;
 import zonely.ams.adcore.service.AdcoreSyncService;
 import zonely.ams.adcore.sync.SyncProgressBroadcaster;
+import zonely.ams.adcore.util.DeviceIdProvider;
 
 public class SyncActivity extends BaseActivity {
+    public static final String EXTRA_SHOW_UNMAPPED_DEVICE = "show_unmapped_device";
     private static final String TAG = "SyncActivity";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Map<String, ProgressRow> rows = new LinkedHashMap<>();
     private LinearLayout list;
     private TextView headline;
+    private TextView unmappedDeviceId;
+    private Button refreshButton;
+    private View progressContainer;
+    private View unmappedContainer;
     private boolean receiverRegistered;
 
     private final BroadcastReceiver progressReceiver = new BroadcastReceiver() {
@@ -46,6 +53,12 @@ public class SyncActivity extends BaseActivity {
         if (AdcoreScheduler.isDailySyncDue(this)) {
             AdcoreLogger.i(TAG, "Missed 00:30 daily pull detected; this SyncActivity run will refresh resources and update the daily marker.");
         }
+        buildUi();
+        registerProgressReceiver();
+        if (getIntent().getBooleanExtra(EXTRA_SHOW_UNMAPPED_DEVICE, false)) {
+            showUnmappedDeviceScreen();
+            return;
+        }
         boolean hasCache = AdcoreDatabase.getInstance(this).hasCachedVideos();
         if (hasCache) {
             AdcoreLogger.i(TAG, "Cached videos already exist. Starting AdsActivity while sync continues in background.");
@@ -53,9 +66,7 @@ public class SyncActivity extends BaseActivity {
             goTo(AdsActivity.class, true);
             return;
         }
-        buildUi();
-        registerProgressReceiver();
-        AdcoreSyncService.startInitial(this, true);
+        startForegroundSync();
     }
 
     @Override
@@ -67,34 +78,67 @@ public class SyncActivity extends BaseActivity {
         super.onDestroy();
     }
 
+    @Override
+    protected void handleOnClick(View view) {
+        if (view == refreshButton) {
+            startForegroundSync();
+        }
+    }
+
     private void buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(backgroundColor());
-        root.setPadding(dp(48), dp(38), dp(48), dp(38));
-
-        headline = label("Syncing resources", 26, Color.WHITE);
-        headline.setGravity(Gravity.LEFT);
-        root.addView(headline);
-
-        ScrollView scrollView = new ScrollView(this);
-        list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        scrollView.addView(list);
-        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
-        scrollParams.topMargin = dp(24);
-        root.addView(scrollView, scrollParams);
-        setContentView(root);
+        setContentView(R.layout.activity_sync);
+        progressContainer = findViewById(R.id.sync_progress_container);
+        unmappedContainer = findViewById(R.id.unmapped_container);
+        headline = findViewById(R.id.sync_headline);
+        list = findViewById(R.id.sync_progress_list);
+        unmappedDeviceId = findViewById(R.id.unmapped_device_id);
+        refreshButton = findViewById(R.id.unmapped_refresh_button);
+        refreshButton.setOnClickListener(this);
     }
 
     private void registerProgressReceiver() {
+        if (receiverRegistered) {
+            return;
+        }
         IntentFilter filter = new IntentFilter(SyncProgressBroadcaster.ACTION_SYNC_PROGRESS);
         ContextCompat.registerReceiver(this, progressReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
         receiverRegistered = true;
     }
 
+    private void startForegroundSync() {
+        rows.clear();
+        list.removeAllViews();
+        headline.setText(R.string.syncing_resources);
+        progressContainer.setVisibility(View.VISIBLE);
+        unmappedContainer.setVisibility(View.GONE);
+        startForegroundSyncWhenIdle();
+    }
+
+    private void startForegroundSyncWhenIdle() {
+        if (AdcoreSyncService.isRunning()) {
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    startForegroundSyncWhenIdle();
+                }
+            }, 500L);
+            return;
+        }
+        AdcoreSyncService.startInitial(this, true);
+    }
+
+    private void showUnmappedDeviceScreen() {
+        handler.removeCallbacksAndMessages(null);
+        progressContainer.setVisibility(View.GONE);
+        unmappedContainer.setVisibility(View.VISIBLE);
+        unmappedDeviceId.setText(DeviceIdProvider.getDeviceId(this));
+    }
+
     private void handleProgress(Intent intent) {
+        if (intent.getBooleanExtra(SyncProgressBroadcaster.EXTRA_UNMAPPED_DEVICE, false)) {
+            showUnmappedDeviceScreen();
+            return;
+        }
         String stepId = intent.getStringExtra(SyncProgressBroadcaster.EXTRA_STEP_ID);
         String title = intent.getStringExtra(SyncProgressBroadcaster.EXTRA_TITLE);
         String status = intent.getStringExtra(SyncProgressBroadcaster.EXTRA_STATUS);
@@ -113,10 +157,10 @@ public class SyncActivity extends BaseActivity {
         }
         row.title.setText(title == null ? stepId : title);
         row.status.setText(status == null ? "" : status);
-        row.status.setTextColor(error ? Color.rgb(255, 110, 110) : Color.rgb(185, 205, 225));
+        row.status.setTextColor(ContextCompat.getColor(this, error ? R.color.adcore_error : R.color.adcore_text_secondary));
         row.progress.setProgress(progress);
         if (terminal) {
-            headline.setText(success ? "Sync complete" : "Sync failed");
+            headline.setText(success ? R.string.sync_complete : R.string.sync_failed);
             if (success || AdcoreDatabase.getInstance(this).hasCachedVideos()) {
                 handler.postDelayed(new Runnable() {
                     @Override
@@ -135,23 +179,12 @@ public class SyncActivity extends BaseActivity {
         final ProgressBar progress;
 
         ProgressRow(String titleValue) {
-            container = new LinearLayout(SyncActivity.this);
-            container.setOrientation(LinearLayout.VERTICAL);
-            container.setPadding(0, dp(12), 0, dp(12));
-            title = label(titleValue, 18, Color.WHITE);
-            status = label("", 14, Color.rgb(185, 205, 225));
-            progress = new ProgressBar(SyncActivity.this, null, android.R.attr.progressBarStyleHorizontal);
-            progress.setMax(100);
-            progress.setProgress(0);
-            container.addView(title);
-            LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            statusParams.topMargin = dp(4);
-            container.addView(status, statusParams);
-            LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, dp(8));
-            progressParams.topMargin = dp(8);
-            container.addView(progress, progressParams);
+            container = (LinearLayout) LayoutInflater.from(SyncActivity.this)
+                    .inflate(R.layout.item_sync_progress, list, false);
+            title = container.findViewById(R.id.progress_title);
+            status = container.findViewById(R.id.progress_status);
+            progress = container.findViewById(R.id.progress_bar);
+            title.setText(titleValue);
         }
     }
 }

@@ -1,123 +1,222 @@
 package zonely.ams.adcore.activity;
 
-import android.graphics.Color;
-import android.media.MediaPlayer;
+import android.annotation.SuppressLint;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.view.Gravity;
-import android.widget.FrameLayout;
-import android.widget.LinearLayout;
+import android.view.KeyEvent;
+import android.view.View;
 import android.widget.TextView;
-import android.widget.VideoView;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
+import androidx.core.content.ContextCompat;
+
+import org.videolan.libvlc.LibVLC;
+import org.videolan.libvlc.Media;
+import org.videolan.libvlc.MediaPlayer;
+import org.videolan.libvlc.util.VLCVideoLayout;
+
+import zonely.ams.adcore.R;
 import zonely.ams.adcore.data.AdcoreDatabase;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.model.ResourceItem;
 import zonely.ams.adcore.service.AdcoreSyncService;
+import zonely.ams.adcore.sync.SyncProgressBroadcaster;
+import zonely.ams.adcore.util.DeviceIdProvider;
 import zonely.ams.adcore.util.TimeUtils;
 
+@SuppressLint("GestureBackNavigation")
 public class AdsActivity extends BaseActivity {
     private static final String TAG = "AdsActivity";
-    private VideoView videoView;
+    private static final long DEVICE_ID_OVERLAY_MS = 60000L;
+    private VLCVideoLayout videoLayout;
+    private LibVLC libVLC;
+    private MediaPlayer mediaPlayer;
     private TextView emptyMessage;
+    private TextView deviceIdText;
+    private View deviceIdOverlay;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<ResourceItem> playlist = new ArrayList<>();
+    private boolean viewsAttached;
+    private boolean receiverRegistered;
+    private boolean deviceIdOverlayVisible;
     private int index;
     private long currentStartMs;
     private ResourceItem currentResource;
 
+    private final BroadcastReceiver syncReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent != null && intent.getBooleanExtra(SyncProgressBroadcaster.EXTRA_UNMAPPED_DEVICE, false)) {
+                openUnmappedDeviceScreen();
+            }
+        }
+    };
+
+    private final Runnable hideDeviceIdOverlayRunnable = new Runnable() {
+        @Override
+        public void run() {
+            hideDeviceIdOverlay();
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_ads);
+        videoLayout = findViewById(R.id.vlc_video_layout);
+        emptyMessage = findViewById(R.id.ads_empty_message);
+        deviceIdOverlay = findViewById(R.id.ads_device_id_overlay);
+        deviceIdText = findViewById(R.id.ads_device_id);
+        initVlcPlayer();
+    }
 
-        // Root container
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.BLACK);
-
-        // Inner container to handle centering
-        LinearLayout centerWrapper = new LinearLayout(this);
-        centerWrapper.setGravity(Gravity.CENTER);
-
-        videoView = new VideoView(this);
-
-        // Add VideoView to the wrapper (Wrap content so it doesn't force itself to top)
-        centerWrapper.addView(videoView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        // Add the wrapper to the root FrameLayout
-        root.addView(centerWrapper, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-
-        emptyMessage = label("", 22, Color.WHITE);
-        emptyMessage.setGravity(Gravity.CENTER);
-        root.addView(emptyMessage, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-
-        setContentView(root);
-        wireVideoCallbacks();
+    @Override
+    protected void onStart() {
+        super.onStart();
+        attachPlayerViews();
+        registerSyncReceiver();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        loadPlaylistAndPlay();
+        if (!deviceIdOverlayVisible) {
+            loadPlaylistAndPlay();
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        if (videoView != null && videoView.isPlaying()) {
-            videoView.pause();
-        }
+        pausePlayback();
     }
 
-    private void wireVideoCallbacks() {
-        videoView.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+    @Override
+    protected void onStop() {
+        unregisterSyncReceiver();
+        handler.removeCallbacks(hideDeviceIdOverlayRunnable);
+        deviceIdOverlayVisible = false;
+        deviceIdOverlay.setVisibility(View.GONE);
+        stopPlayback();
+        detachPlayerViews();
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        releaseVlcPlayer();
+        super.onDestroy();
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            event.startTracking();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            showDeviceIdOverlay();
+            return true;
+        }
+        return super.onKeyLongPress(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
+    }
+
+    @Override
+    public void onBackPressed() {
+        AdcoreLogger.i(TAG, "Short Back press consumed on AdsActivity.");
+    }
+
+    private void initVlcPlayer() {
+        List<String> options = new ArrayList<>();
+        options.add("--no-sub-autodetect-file");
+        options.add("--audio-time-stretch");
+        options.add("--avcodec-hw=none");
+        libVLC = new LibVLC(this, options);
+        mediaPlayer = new MediaPlayer(libVLC);
+        mediaPlayer.setEventListener(new MediaPlayer.EventListener() {
             @Override
-            public void onPrepared(MediaPlayer mp) {
-                mp.setLooping(false);
-                currentStartMs = TimeUtils.now();
-                emptyMessage.setText("");
-                videoView.start();
-                AdcoreLogger.i(TAG, "Video started. resourceId=" + (currentResource == null ? null : currentResource.id));
-            }
-        });
-        videoView.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
-            @Override
-            public void onCompletion(MediaPlayer mp) {
-                recordPlaybackAndContinue();
-            }
-        });
-        videoView.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-            @Override
-            public boolean onError(MediaPlayer mp, int what, int extra) {
-                AdcoreLogger.e(TAG, "Video playback error. resourceId=" + (currentResource == null ? null : currentResource.id)
-                        + " what=" + what + " extra=" + extra);
+            public void onEvent(final MediaPlayer.Event event) {
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
-                        playNext();
+                        handlePlayerEvent(event);
                     }
                 });
-                return true;
             }
         });
     }
 
+    private void handlePlayerEvent(MediaPlayer.Event event) {
+        if (event == null) {
+            return;
+        }
+        switch (event.type) {
+            case MediaPlayer.Event.Playing:
+                currentStartMs = TimeUtils.now();
+                emptyMessage.setText("");
+                AdcoreLogger.i(TAG, "Video started with LibVLC. resourceId="
+                        + (currentResource == null ? null : currentResource.id));
+                break;
+            case MediaPlayer.Event.EndReached:
+                recordPlaybackAndContinue();
+                break;
+            case MediaPlayer.Event.EncounteredError:
+                AdcoreLogger.e(TAG, "LibVLC playback error. resourceId="
+                        + (currentResource == null ? null : currentResource.id)
+                        + " file=" + (currentResource == null ? null : currentResource.localCachePath));
+                playNext();
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void attachPlayerViews() {
+        if (!viewsAttached && mediaPlayer != null) {
+            mediaPlayer.attachViews(videoLayout, null, false, false);
+            viewsAttached = true;
+        }
+    }
+
+    private void detachPlayerViews() {
+        if (viewsAttached && mediaPlayer != null) {
+            mediaPlayer.detachViews();
+            viewsAttached = false;
+        }
+    }
+
     private void loadPlaylistAndPlay() {
+        if (deviceIdOverlayVisible) {
+            return;
+        }
         playlist.clear();
         playlist.addAll(AdcoreDatabase.getInstance(this).getCachedResources());
         if (playlist.isEmpty()) {
-            emptyMessage.setText("No cached videos available");
+            emptyMessage.setText(R.string.no_cached_videos_available);
+            stopPlayback();
             AdcoreLogger.w(TAG, "No cached videos found. Starting foreground sync.");
             AdcoreSyncService.startInitial(this, true);
             handler.postDelayed(new Runnable() {
@@ -137,13 +236,22 @@ public class AdsActivity extends BaseActivity {
             loadPlaylistAndPlay();
             return;
         }
+        attachPlayerViews();
         currentResource = playlist.get(index);
         if (currentResource.localCachePath == null || !new File(currentResource.localCachePath).exists()) {
             AdcoreLogger.w(TAG, "Cached file missing during playback. resourceId=" + currentResource.id);
             playNext();
             return;
         }
-        videoView.setVideoURI(Uri.fromFile(new File(currentResource.localCachePath)));
+        File localFile = new File(currentResource.localCachePath);
+        if (mediaPlayer.hasMedia()) {
+            mediaPlayer.stop();
+        }
+        Media media = new Media(libVLC, Uri.fromFile(localFile));
+        media.setHWDecoderEnabled(false, false);
+        mediaPlayer.setMedia(media);
+        media.release();
+        mediaPlayer.play();
     }
 
     private void recordPlaybackAndContinue() {
@@ -173,5 +281,80 @@ public class AdsActivity extends BaseActivity {
             }
         }
         playCurrent();
+    }
+
+    private void showDeviceIdOverlay() {
+        pausePlayback();
+        deviceIdText.setText(DeviceIdProvider.getDeviceId(this));
+        deviceIdOverlayVisible = true;
+        deviceIdOverlay.setVisibility(View.VISIBLE);
+        handler.removeCallbacks(hideDeviceIdOverlayRunnable);
+        handler.postDelayed(hideDeviceIdOverlayRunnable, DEVICE_ID_OVERLAY_MS);
+        AdcoreLogger.i(TAG, "DeviceId overlay shown from long Back press.");
+    }
+
+    private void hideDeviceIdOverlay() {
+        if (!deviceIdOverlayVisible) {
+            return;
+        }
+        deviceIdOverlayVisible = false;
+        deviceIdOverlay.setVisibility(View.GONE);
+        if (currentResource != null && currentResource.localCachePath != null
+                && new File(currentResource.localCachePath).exists()) {
+            mediaPlayer.play();
+        } else {
+            loadPlaylistAndPlay();
+        }
+        AdcoreLogger.i(TAG, "DeviceId overlay hidden; playback resumed.");
+    }
+
+    private void pausePlayback() {
+        if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+            mediaPlayer.pause();
+        }
+    }
+
+    private void stopPlayback() {
+        if (mediaPlayer != null) {
+            mediaPlayer.stop();
+        }
+    }
+
+    private void releaseVlcPlayer() {
+        if (mediaPlayer != null) {
+            mediaPlayer.setEventListener(null);
+            mediaPlayer.release();
+            mediaPlayer = null;
+        }
+        if (libVLC != null) {
+            libVLC.release();
+            libVLC = null;
+        }
+    }
+
+    private void registerSyncReceiver() {
+        if (receiverRegistered) {
+            return;
+        }
+        IntentFilter filter = new IntentFilter(SyncProgressBroadcaster.ACTION_SYNC_PROGRESS);
+        ContextCompat.registerReceiver(this, syncReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        receiverRegistered = true;
+    }
+
+    private void unregisterSyncReceiver() {
+        if (receiverRegistered) {
+            unregisterReceiver(syncReceiver);
+            receiverRegistered = false;
+        }
+    }
+
+    private void openUnmappedDeviceScreen() {
+        handler.removeCallbacksAndMessages(null);
+        stopPlayback();
+        AdcoreLogger.w(TAG, "Unmapped device detected while ads were playing; opening SyncActivity mapping screen.");
+        Intent intent = new Intent(this, SyncActivity.class);
+        intent.putExtra(SyncActivity.EXTRA_SHOW_UNMAPPED_DEVICE, true);
+        startActivity(intent);
+        finish();
     }
 }

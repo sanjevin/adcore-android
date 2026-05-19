@@ -28,6 +28,22 @@ public final class FileUtils {
         return privateDir(context, AppConstants.RESOURCE_DIR);
     }
 
+    public static void ensureWritableDirectory(File dir) throws IOException {
+        if (dir == null) {
+            throw new IOException("Directory is null.");
+        }
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new IOException("Unable to create directory: " + dir.getAbsolutePath());
+        }
+        if (!dir.isDirectory()) {
+            throw new IOException("Path is not a directory: " + dir.getAbsolutePath());
+        }
+        File probe = File.createTempFile(".write-probe-", ".tmp", dir);
+        if (!probe.delete()) {
+            probe.deleteOnExit();
+        }
+    }
+
     public static File exportsDir(Context context) {
         return privateDir(context, AppConstants.EXPORT_DIR);
     }
@@ -43,6 +59,22 @@ public final class FileUtils {
     public static void deleteQuietly(File file) {
         if (file != null && file.exists() && !file.delete()) {
             file.deleteOnExit();
+        }
+    }
+
+    public static void deleteDirectoryContents(File dir) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) {
+            return;
+        }
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File file : files) {
+            if (file.isDirectory()) {
+                deleteDirectoryContents(file);
+            }
+            deleteQuietly(file);
         }
     }
 

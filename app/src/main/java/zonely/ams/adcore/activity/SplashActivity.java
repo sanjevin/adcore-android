@@ -1,14 +1,9 @@
 package zonely.ams.adcore.activity;
 
 import android.content.Intent;
-import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.view.Gravity;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 
 import zonely.ams.adcore.R;
 import zonely.ams.adcore.config.AppConstants;
@@ -23,24 +18,7 @@ public class SplashActivity extends BaseActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         SessionManager.startStoredCredentialLogin(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER);
-        root.setBackgroundColor(backgroundColor());
-        root.setPadding(dp(40), dp(40), dp(40), dp(40));
-
-        ImageView logo = new ImageView(this);
-        logo.setImageResource(R.mipmap.ic_launcher);
-        LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(dp(160), dp(160));
-        root.addView(logo, logoParams);
-
-        TextView name = label("adcore", 34, Color.WHITE);
-        name.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        nameParams.topMargin = dp(18);
-        root.addView(name, nameParams);
-        setContentView(root);
+        setContentView(R.layout.activity_splash);
 
         handler.postDelayed(new Runnable() {
             @Override

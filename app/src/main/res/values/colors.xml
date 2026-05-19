@@ -7,4 +7,7 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="adcore_background">#FF06090E</color>
+    <color name="adcore_text_secondary">#FFB9CDE1</color>
+    <color name="adcore_error">#FFFF6E6E</color>
 </resources>

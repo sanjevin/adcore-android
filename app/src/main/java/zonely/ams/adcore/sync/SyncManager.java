@@ -16,7 +16,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import zonely.ams.adcore.R;
 import zonely.ams.adcore.api.ApiClient;
+import zonely.ams.adcore.api.ApiException;
 import zonely.ams.adcore.api.DownloadProgress;
 import zonely.ams.adcore.config.AppConstants;
 import zonely.ams.adcore.data.AdcoreDatabase;
@@ -57,18 +59,20 @@ public class SyncManager {
         int total = 0;
         boolean success = false;
         String terminalMessage = "";
+        final String deviceId = DeviceIdProvider.getDeviceId(appContext);
         try {
             AdcoreLogger.i(TAG, "Sync started. type=" + syncType + " dailyComparison=" + dailyComparison);
             if (emitProgress) {
-                SyncProgressBroadcaster.send(appContext, "mapped", "Mapped resources", "Starting", 0, false, false);
+                SyncProgressBroadcaster.send(appContext, "mapped", appContext.getString(R.string.mapped_resources),
+                        appContext.getString(R.string.progress_starting), 0, false, false);
             }
-            final String deviceId = DeviceIdProvider.getDeviceId(appContext);
             MappedResourcesResponse mapped = executeWithRetry(runId, "getMappedResources", null, new Callable<MappedResourcesResponse>() {
                 @Override
                 public MappedResourcesResponse call() throws Exception {
                     return apiClient.getMappedResources(deviceId);
                 }
-            }, emitProgress, "mapped", "Mapped resources");
+            }, emitProgress, "mapped", appContext.getString(R.string.mapped_resources));
+            validateMappedDevice(deviceId, mapped);
 
             total = mapped.resources.size();
             List<ResourceItem> resourcesToDownload = dailyComparison
@@ -89,13 +93,21 @@ public class SyncManager {
             return new SyncResult(true, terminalMessage, total, downloaded, failed);
         } catch (Exception exception) {
             failed++;
-            terminalMessage = "Sync failed: " + exception.getMessage();
+            boolean unmappedDevice = isUnmappedDevice(exception);
+            if (unmappedDevice) {
+                clearMappedStateForUnmappedDevice(deviceId);
+                terminalMessage = "Device not configured. deviceId=" + deviceId;
+            } else {
+                terminalMessage = "Sync failed: " + exception.getMessage();
+            }
             db.completeSyncRun(runId, false, terminalMessage);
             AdcoreLogger.e(TAG, terminalMessage, exception);
-            if (emitProgress) {
+            if (unmappedDevice) {
+                SyncProgressBroadcaster.unmappedDevice(appContext, terminalMessage);
+            } else if (emitProgress) {
                 SyncProgressBroadcaster.terminal(appContext, false, terminalMessage);
             }
-            return new SyncResult(false, terminalMessage, total, downloaded, failed);
+            return new SyncResult(false, terminalMessage, total, downloaded, failed, unmappedDevice);
         } finally {
             AdcoreLogger.i(TAG, "Sync finished. type=" + syncType + " success=" + success + " message=" + terminalMessage);
         }
@@ -103,7 +115,8 @@ public class SyncManager {
 
     private List<ResourceItem> applyInitialResourceState(final MappedResourcesResponse mapped, boolean emitProgress) throws Exception {
         if (emitProgress) {
-            SyncProgressBroadcaster.send(appContext, "db_store", "Store metadata", "Writing resources to SQLite", 25, false, false);
+            SyncProgressBroadcaster.send(appContext, "db_store", appContext.getString(R.string.store_metadata),
+                    appContext.getString(R.string.progress_writing_resources_to_sqlite), 25, false, false);
         }
         final Map<String, ResourceItem> existing = db.getAllResourcesById();
         final List<ResourceItem> toDownload = new ArrayList<>();
@@ -129,15 +142,16 @@ public class SyncManager {
         });
         dbWrite.get();
         if (emitProgress) {
-            SyncProgressBroadcaster.send(appContext, "db_store", "Store metadata",
-                    "SQLite write complete; downloads pending=" + toDownload.size(), 100, true, false);
+            SyncProgressBroadcaster.send(appContext, "db_store", appContext.getString(R.string.store_metadata),
+                    appContext.getString(R.string.progress_sqlite_write_complete, toDownload.size()), 100, true, false);
         }
         return toDownload;
     }
 
     private List<ResourceItem> applyDailyComparison(final MappedResourcesResponse mapped, boolean emitProgress) throws Exception {
         if (emitProgress) {
-            SyncProgressBroadcaster.send(appContext, "resource_diff", "Resource diff", "Comparing server and local resource records", 10, false, false);
+            SyncProgressBroadcaster.send(appContext, "resource_diff", appContext.getString(R.string.resource_diff),
+                    appContext.getString(R.string.progress_comparing_resources), 10, false, false);
         }
         final Map<String, ResourceItem> existing = db.getAllResourcesById();
         final List<ResourceItem> toDownload = new ArrayList<>();
@@ -190,8 +204,8 @@ public class SyncManager {
         });
         dbWrite.get();
         if (emitProgress) {
-            SyncProgressBroadcaster.send(appContext, "resource_diff", "Resource diff",
-                    "Diff complete; changed/new downloads=" + toDownload.size(), 100, true, false);
+            SyncProgressBroadcaster.send(appContext, "resource_diff", appContext.getString(R.string.resource_diff),
+                    appContext.getString(R.string.progress_diff_complete, toDownload.size()), 100, true, false);
         }
         AdcoreLogger.i(TAG, "Daily diff complete. serverResources=" + serverById.size() + " localResources=" + existing.size()
                 + " upserts=" + toUpsert.size() + " downloads=" + toDownload.size());
@@ -199,9 +213,11 @@ public class SyncManager {
     }
 
     private DownloadSummary downloadResources(long runId, List<ResourceItem> resources, final boolean emitProgress) throws Exception {
+        prepareResourceCache(emitProgress);
         if (resources.isEmpty()) {
             if (emitProgress) {
-                SyncProgressBroadcaster.send(appContext, "downloads", "Downloads", "No downloads needed", 100, true, false);
+                SyncProgressBroadcaster.send(appContext, "downloads", appContext.getString(R.string.downloads),
+                        appContext.getString(R.string.progress_no_downloads_needed), 100, true, false);
             }
             return new DownloadSummary(0, 0);
         }
@@ -219,26 +235,29 @@ public class SyncManager {
                     String stepId = "download_" + resource.id;
                     try {
                         if (emitProgress) {
-                            SyncProgressBroadcaster.send(appContext, stepId, title, "Queued", 0, false, false);
+                            SyncProgressBroadcaster.send(appContext, stepId, title,
+                                    appContext.getString(R.string.progress_queued), 0, false, false);
                         }
                         downloadOne(runId, resource, emitProgress, stepId, title);
                         downloaded.incrementAndGet();
                         if (emitProgress) {
-                            SyncProgressBroadcaster.send(appContext, stepId, title, "Downloaded", 100, true, false);
+                            SyncProgressBroadcaster.send(appContext, stepId, title,
+                                    appContext.getString(R.string.progress_downloaded), 100, true, false);
                         }
                     } catch (Exception exception) {
                         failed.incrementAndGet();
-                        AdcoreLogger.e(TAG, "Resource download failed after retries. resourceId=" + resource.id, exception);
+                        AdcoreLogger.e(TAG, "Resource download failed after retries. " + resourceMetadata(resource), exception);
                         if (emitProgress) {
                             SyncProgressBroadcaster.send(appContext, stepId, title,
-                                    "Failed: " + exception.getMessage(), 100, true, true);
+                                    appContext.getString(R.string.progress_failed_with_message, exception.getMessage()), 100, true, true);
                         }
                     } finally {
                         int done = completed.incrementAndGet();
                         if (emitProgress) {
                             int progress = (int) ((done * 100L) / resources.size());
-                            SyncProgressBroadcaster.send(appContext, "downloads", "Downloads",
-                                    "Completed " + done + " of " + resources.size(), progress, done == resources.size(), false);
+                            SyncProgressBroadcaster.send(appContext, "downloads", appContext.getString(R.string.downloads),
+                                    appContext.getString(R.string.progress_completed_count, done, resources.size()),
+                                    progress, done == resources.size(), false);
                         }
                     }
                 }
@@ -265,7 +284,8 @@ public class SyncManager {
                         }
                         int percent = totalBytes > 0 ? (int) ((bytesRead * 100L) / totalBytes) : 50;
                         SyncProgressBroadcaster.send(appContext, stepId, title,
-                                "Downloading " + bytesRead + "/" + (totalBytes > 0 ? totalBytes : -1) + " bytes",
+                                appContext.getString(R.string.progress_downloading_bytes,
+                                        bytesRead, totalBytes > 0 ? totalBytes : -1),
                                 percent, false, false);
                     }
                 });
@@ -285,14 +305,15 @@ public class SyncManager {
             try {
                 if (emitProgress) {
                     SyncProgressBroadcaster.send(appContext, stepId, title,
-                            "Attempt " + (attempt + 1) + " of " + (retry.maxRetries + 1),
+                            appContext.getString(R.string.progress_attempt_count, attempt + 1, retry.maxRetries + 1),
                             attempt == 0 ? 10 : 30, false, false);
                 }
                 T result = callable.call();
                 long completed = TimeUtils.now();
                 db.recordApiMetric(runId, apiName, resourceId, started, completed, attempt, true, "OK");
                 if (emitProgress) {
-                    SyncProgressBroadcaster.send(appContext, stepId, title, "Completed", 100, true, false);
+                    SyncProgressBroadcaster.send(appContext, stepId, title,
+                            appContext.getString(R.string.progress_completed), 100, true, false);
                 }
                 return result;
             } catch (Exception exception) {
@@ -301,18 +322,72 @@ public class SyncManager {
                 db.recordApiMetric(runId, apiName, resourceId, started, completed, attempt, false, exception.getMessage());
                 AdcoreLogger.w(TAG, apiName + " failed. resourceId=" + resourceId + " attempt=" + (attempt + 1)
                         + " maxAttempts=" + (retry.maxRetries + 1) + " message=" + exception.getMessage(), exception);
-                if (attempt >= retry.maxRetries) {
+                if (attempt >= retry.maxRetries || isUnmappedDevice(exception)) {
                     break;
                 }
                 if (emitProgress) {
                     SyncProgressBroadcaster.send(appContext, stepId, title,
-                            "Retrying after failure: " + exception.getMessage(), 40, false, true);
+                            appContext.getString(R.string.progress_retrying_after_failure, exception.getMessage()),
+                            40, false, true);
                 }
                 sleepSeconds(retry.delaySeconds);
                 attempt++;
             }
         }
         throw last == null ? new IllegalStateException(apiName + " failed") : last;
+    }
+
+    private void prepareResourceCache(boolean emitProgress) throws Exception {
+        if (emitProgress) {
+            SyncProgressBroadcaster.send(appContext, "cache_ready", appContext.getString(R.string.video_cache),
+                    appContext.getString(R.string.progress_preparing_cache_folder), 5, false, false);
+        }
+        File dir = FileUtils.resourcesDir(appContext);
+        FileUtils.ensureWritableDirectory(dir);
+        if (emitProgress) {
+            SyncProgressBroadcaster.send(appContext, "cache_ready", appContext.getString(R.string.video_cache),
+                    appContext.getString(R.string.progress_cache_ready, dir.getAbsolutePath()), 100, true, false);
+        }
+        AdcoreLogger.i(TAG, "Video cache ready for downloads. path=" + dir.getAbsolutePath());
+    }
+
+    private void validateMappedDevice(String localDeviceId, MappedResourcesResponse mapped) {
+        String mappedDeviceId = mapped == null || mapped.node == null ? null : mapped.node.deviceId;
+        if (mappedDeviceId == null || mappedDeviceId.trim().length() == 0) {
+            return;
+        }
+        if (!localDeviceId.equals(mappedDeviceId.trim())) {
+            throw new IllegalStateException("Mapped node deviceId mismatch. localDeviceId=" + localDeviceId
+                    + " mappedDeviceId=" + mappedDeviceId);
+        }
+    }
+
+    private boolean isUnmappedDevice(Exception exception) {
+        if (exception instanceof ApiException) {
+            ApiException apiException = (ApiException) exception;
+            return apiException.getHttpCode() == 404 && containsDeviceNotConfigured(apiException.getMessage());
+        }
+        Throwable cause = exception == null ? null : exception.getCause();
+        while (cause != null) {
+            if (cause instanceof ApiException) {
+                ApiException apiException = (ApiException) cause;
+                return apiException.getHttpCode() == 404 && containsDeviceNotConfigured(apiException.getMessage());
+            }
+            cause = cause.getCause();
+        }
+        return false;
+    }
+
+    private boolean containsDeviceNotConfigured(String message) {
+        return message != null && message.toLowerCase(Locale.ROOT).contains("device not configured");
+    }
+
+    private void clearMappedStateForUnmappedDevice(String deviceId) {
+        File resourceDir = FileUtils.resourcesDir(appContext);
+        FileUtils.deleteDirectoryContents(resourceDir);
+        db.clearMappedResourcesAndNodes();
+        AdcoreLogger.w(TAG, "Device is not configured; local cached videos and mapped resource state cleared. deviceId="
+                + deviceId + " resourceDir=" + resourceDir.getAbsolutePath());
     }
 
     private boolean needsDownload(ResourceItem server, ResourceItem stored) {
@@ -333,6 +408,23 @@ public class SyncManager {
         String base = FileUtils.sanitizeFileName(resource.id);
         String extension = extensionFor(resource);
         return new File(FileUtils.resourcesDir(appContext), base + extension);
+    }
+
+    private String resourceMetadata(ResourceItem resource) {
+        if (resource == null) {
+            return "resource=null";
+        }
+        return "resourceId=" + resource.id
+                + " fileName=" + resource.fileName
+                + " mediaType=" + resource.mediaType
+                + " fileSizeBytes=" + resource.fileSizeBytes
+                + " checksum=" + resource.checksum
+                + " durationSeconds=" + resource.durationSeconds
+                + " typeKey=" + resource.typeKey
+                + " status=" + resource.status
+                + " displayOrder=" + resource.displayOrder
+                + " fileUri=" + resource.fileUri
+                + " targetFile=" + resourceTargetFile(resource).getAbsolutePath();
     }
 
     private String extensionFor(ResourceItem resource) {

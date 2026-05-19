@@ -270,6 +270,19 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         AdcoreLogger.i(TAG, "Resource deleted. resourceId=" + resourceId + " rows=" + deleted);
     }
 
+    public synchronized void clearMappedResourcesAndNodes() {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            int resources = db.delete("resources", null, null);
+            int nodes = db.delete("nodes", null, null);
+            db.setTransactionSuccessful();
+            AdcoreLogger.w(TAG, "Mapped resource state cleared. resources=" + resources + " nodes=" + nodes);
+        } finally {
+            db.endTransaction();
+        }
+    }
+
     public synchronized ResourceItem getResource(String resourceId) {
         Cursor cursor = getReadableDatabase().query("resources", null, "id = ?", new String[]{resourceId}, null, null, null);
         try {

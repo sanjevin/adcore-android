@@ -1,4 +1,39 @@
 <resources>
     <string name="app_name">adcore</string>
     <string name="device_admin_description">Allows adcore to manage kiosk updates on dedicated TV devices.</string>
+    <string name="logging_in">Logging in</string>
+    <string name="username_or_email">Username or email</string>
+    <string name="password">Password</string>
+    <string name="login">Login</string>
+    <string name="username_required">Username is required</string>
+    <string name="password_required">Password is required</string>
+    <string name="login_failed">Login failed</string>
+    <string name="syncing_resources">Syncing resources</string>
+    <string name="sync_complete">Sync complete</string>
+    <string name="sync_failed">Sync failed</string>
+    <string name="please_map_device_id_to_node">please map the device id to node</string>
+    <string name="refresh">Refresh</string>
+    <string name="no_cached_videos_available">No cached videos available</string>
+    <string name="mapped_resources">Mapped resources</string>
+    <string name="store_metadata">Store metadata</string>
+    <string name="resource_diff">Resource diff</string>
+    <string name="downloads">Downloads</string>
+    <string name="video_cache">Video cache</string>
+    <string name="sync">Sync</string>
+    <string name="progress_starting">Starting</string>
+    <string name="progress_writing_resources_to_sqlite">Writing resources to SQLite</string>
+    <string name="progress_sqlite_write_complete">SQLite write complete; downloads pending=%1$d</string>
+    <string name="progress_comparing_resources">Comparing server and local resource records</string>
+    <string name="progress_diff_complete">Diff complete; changed/new downloads=%1$d</string>
+    <string name="progress_no_downloads_needed">No downloads needed</string>
+    <string name="progress_queued">Queued</string>
+    <string name="progress_downloaded">Downloaded</string>
+    <string name="progress_completed">Completed</string>
+    <string name="progress_completed_count">Completed %1$d of %2$d</string>
+    <string name="progress_attempt_count">Attempt %1$d of %2$d</string>
+    <string name="progress_retrying_after_failure">Retrying after failure: %1$s</string>
+    <string name="progress_downloading_bytes">Downloading %1$d/%2$d bytes</string>
+    <string name="progress_failed_with_message">Failed: %1$s</string>
+    <string name="progress_preparing_cache_folder">Preparing cache folder</string>
+    <string name="progress_cache_ready">Ready: %1$s</string>
 </resources>

@@ -1,6 +1,6 @@
 # adcore-android
 
-Android TV kiosk application for Adcore resource sync and video playback.
+Android TV kiosk application for Adcore resource sync and local video playback.
 
 ## Summary
 
@@ -13,120 +13,129 @@ Android TV kiosk application for Adcore resource sync and video playback.
 - Entry activity: `SplashActivity`
 - Main flow: `SplashActivity -> LoginActivity -> SyncActivity -> AdsActivity`
 
-The implementation intentionally uses Android platform APIs for the core app: SQLite, `HttpURLConnection`, `AlarmManager`, `JobScheduler`, `Service`, `BroadcastReceiver`, `VideoView`, and `PackageInstaller`. This keeps the runtime predictable on locked-down TV devices.
+## Current Implementation
 
-## Implemented Requirements
+### Activity Layouts
 
-### Activities
+Each concrete activity now owns a separate XML layout under `app/src/main/res/layout` and binds views by resource id from Java:
 
-- `BaseActivity`
-  - Implements common Android event interfaces.
-  - Each framework callback delegates to a non-static empty `handle...` method, for example `onClick` delegates to `handleOnClick`.
-  - Enforces immersive full-screen mode and keep-screen-on behavior.
+- `activity_splash.xml` -> `SplashActivity`
+- `activity_login.xml` -> `LoginActivity`
+- `activity_sync.xml` -> `SyncActivity`
+- `activity_ads.xml` -> `AdsActivity`
+- `item_sync_progress.xml` -> dynamic sync progress rows
 
-- `SplashActivity`
-  - Shows the dummy app logo for exactly 5 seconds.
-  - Starts stored-credential login on a background thread.
-  - Skips `LoginActivity` when the access token is ready before the splash completes.
-  - Opens `LoginActivity` in indefinite "Logging in" mode when implicit login is still in progress.
+User-facing activity text and sync progress labels are maintained in `app/src/main/res/values/strings.xml`. Shared UI dimensions are maintained in `dimens.xml`.
 
-- `LoginActivity`
-  - Username/password inputs with required validations.
-  - Hides the login button and shows an indefinite spinner during login.
-  - Disables both inputs during login.
-  - Persists credentials in plain SQLite for this release.
-  - Contains code comments/placeholders for Android Keystore-backed encryption in a future release.
+### Device Identity
 
-- `SyncActivity`
-  - Calls `getMappedResources`.
-  - Stores node/resource metadata in SQLite.
-  - Downloads resources concurrently into the app-private `resources` folder.
-  - Shows definite progress rows for mapped-resource fetch, DB write/diff, and every dynamic resource download.
-  - Retries API calls according to DB-configured retry values.
-  - If cached videos already exist, immediately starts `AdsActivity` and lets sync continue in the background.
+The project currently uses exactly one active `deviceId` source: `Settings.Secure.ANDROID_ID`.
 
-- `AdsActivity`
-  - Reads cached resources from SQLite in DB query order.
-  - Plays local cached video files in an infinite loop.
-  - Tracks daily play count and total play seconds per resource.
+The app does not use:
 
-### Boot And Kiosk Behavior
+- Printed serial number
+- `Build.getSerial()`
+- `ro.serialno`
+- App-generated SQLite UUID
 
-- `BootReceiver` listens for boot/package replacement events and launches `SplashActivity`.
-- The app includes Leanback launcher support for Android TV.
-- The app is designed for kiosk/default-launcher/device-owner provisioning. Newer Android versions can restrict background activity launch unless the device is managed or configured as a kiosk/default launcher.
+The older serial and app-generated UUID fallback options are kept as commented reference in `DeviceIdProvider` only. They are intentionally inactive. `READ_PHONE_STATE` is not requested.
 
-### Device Id
+If `ANDROID_ID` is unavailable or invalid, the app logs the issue and fails identity resolution instead of silently switching to another identifier.
 
-`DeviceIdProvider` uses the TV box serial as the primary `deviceId`:
+### Mapping Flow
 
-1. `Build.getSerial()` when permitted.
-2. `ro.serialno` system property fallback.
-3. `Settings.Secure.ANDROID_ID` fallback.
-4. Generated UUID fallback stored in SQLite.
+`SyncActivity` calls `getMappedResources/{deviceId}` with `ANDROID_ID`.
 
-For production TV boxes, OEM firmware or device-owner provisioning may be required for the printed serial number to be readable without user prompts.
+If the server returns `Device not configured`:
 
-### Sync And Daily Pull
+- The app clears cached videos from the app-private `resources/` folder.
+- The app clears local mapped `resources` and `nodes` records.
+- If ads are currently playing, `AdsActivity` is interrupted and `SyncActivity` opens.
+- `SyncActivity` shows the centered Android ID with the message `please map the device id to node`.
+- The refresh button starts a clean sync from the beginning after the Android ID is mapped on the server.
 
-- First sync and daily pull share the same sync engine.
-- Daily pull compares resources by `id`.
-- New resources are inserted and downloaded.
-- Missing resources are removed from SQLite and their local video file is deleted.
-- Matching resources are checked for checksum and property changes.
-- Checksum changes clear the stale local cache path and force a fresh download.
-- Last successful daily sync timestamp is stored in SQLite.
-- If the device missed 00:30 while powered off, `SyncActivity` detects the missed daily sync and refreshes resources as part of its run.
+The app also defensively rejects a successful mapped-resource response if the returned node has a non-empty `deviceId` that does not match the local Android ID.
 
-### Background Jobs
+### Playback
 
-- Daily resource pull:
-  - Exact 00:30 alarm schedules an immediate `JobScheduler` sync job.
-  - The next exact alarm is rescheduled after every alarm fire.
+`AdsActivity` uses LibVLC through `org.videolan.android:libvlc-all:3.7.0`, not Android `VideoView` / platform `MediaPlayer`.
 
-- Hourly log scan:
-  - Scans logs newest to oldest for `ERROR` entries.
-  - Zips relevant log files and posts them to `sendErrorLogs`/`saveDeviceLogs`.
-  - Uses a SHA-256 signature to avoid sending the same error archive repeatedly.
+LibVLC native libraries are packaged with the APK for all ABIs included by the dependency, so playback is not dependent on the Android OS media player or device codec support in the same way `VideoView` is. Hardware decoding is disabled by default to reduce dependence on firmware codecs. Playback still depends on Android surfaces, graphics, audio output, and native ABI loading.
 
-- Daily app update check:
-  - Calls `downloadLatestApp` with `BuildConfig.VERSION_NAME`.
-  - Treats HTTP 404 as "already latest".
-  - Downloads the APK in the background.
-  - Uses `PackageInstaller` for silent install when the app is device owner.
-  - Falls back to installer UI if the app is not device owner.
+During video playback:
 
-- Previous-day audit:
-  - Runs once after successful sync.
-  - Sends data to `saveDeviceData`.
-  - Includes user/device/app metadata, uptime totals, sync totals, play time, and per-resource play counts.
+- Short Back is consumed so the kiosk screen does not exit accidentally.
+- Long Back pauses playback, displays only the current Android ID, and auto-resumes after 60 seconds.
+- No action buttons are shown on the AdsActivity Android ID overlay.
+- Repeated Back events are consumed safely.
 
-### Logging
+### Sync And Downloads
 
-- `AdcoreLogger` writes industry-style timestamped logs:
-  - UTC timestamp
-  - level
-  - process id
-  - thread name
-  - tag
-  - message
-  - full stacktrace when present
-- Rolling policy:
-  - Maximum 10 log files.
-  - Maximum 10 MB per log file.
-  - No intentional truncation of message/stacktrace data.
+Before video downloads begin, `SyncManager` creates and verifies the app-private video cache folder is writable.
 
-### Export Services
+Video download failures are logged with full stack trace plus resource metadata:
 
-- `DatabaseExportService`
-  - Prepares a zipped SQLite DB export.
-  - Keeps at most one DB export file.
-  - Upload method is already wired for future websocket-triggered server pull.
+- `resourceId`
+- `fileName`
+- `mediaType`
+- `fileSizeBytes`
+- `checksum`
+- `durationSeconds`
+- `typeKey`
+- `status`
+- `displayOrder`
+- `fileUri`
+- target local file path
 
-- `LogArchiveExportService`
-  - Prepares a zipped archive of all app log files.
-  - Keeps at most one full-log archive file.
-  - Upload method is already wired for future websocket-triggered server pull.
+Daily sync still compares resources by `id`, updates metadata changes, downloads new/changed videos, and deletes missing resources plus their cached files.
+
+### Audit And Device Data
+
+Previous-day audit payloads are sent with `sendDeviceData`. The request body contains `deviceId`; the endpoint is `POST /deviceManagement/saveDeviceData`.
+
+Credentials remain stored in plain SQLite for this release per requirement. The database code contains placeholders for a future Android Keystore-backed encryption release.
+
+## Device ID Advice
+
+For the current simple rollout, `ANDROID_ID` is the active primary identity.
+
+Recommended production rule:
+
+- The app sends only `ANDROID_ID` as `deviceId`.
+- The backend enforces one active node mapping per Android ID.
+- The backend rejects duplicate active mappings.
+- Admin tooling should show and map the Android ID displayed by `SyncActivity`.
+
+This removes the app clear-data problem because the ID is not stored in SQLite. It still must be validated on the actual cheap rooted boxes because bad/cloned firmware can duplicate Android IDs.
+
+The app can prevent itself from using the wrong platform identity. It cannot globally guarantee uniqueness alone. The backend must enforce uniqueness and active mapping ownership.
+
+## Hardware And OS Dependency Analysis
+
+Complete independence from Android OS is not possible because this is an Android application. The realistic goal is to remove vendor/hardware identity assumptions, reduce codec dependence, and isolate Android-specific APIs behind small boundaries.
+
+Current dependency areas:
+
+| Area | Current dependency | Risk | Recommended direction |
+| --- | --- | --- | --- |
+| Device identity | `ANDROID_ID` | Stable across app clear-data; can change after factory reset or be duplicated by bad firmware | Use Android ID now; sample-test real boxes; backend must reject duplicate active mappings |
+| Video playback | LibVLC native player on Android surfaces | Still depends on Android surface/audio/native ABI loading | Keep LibVLC; test target ABIs; consider a `VideoPlayer` interface if another engine is ever needed |
+| Storage | App-private files, SQLite | Android app data clear removes cache/session, but not Android ID | Keep app-private storage; server remains source of truth for node mapping |
+| Scheduling | `AlarmManager`, `JobScheduler`, exact alarm permission | OEM power policies can delay jobs | Keep device-owner/default-launcher deployment; add server-side freshness monitoring |
+| Boot start | Boot/package-replaced broadcasts | Background activity launch restrictions on newer Android | Deploy as kiosk/default launcher/device-owner |
+| Silent update | `DevicePolicyManager`, `PackageInstaller` | True silent install requires device owner | Keep device-owner path; avoid root-specific install for now |
+| Network | `HttpURLConnection`, Android TLS/CA store | Old/cheap firmware may have TLS/CA issues | Consider an HTTP client adapter and certificate/CA strategy if boxes show TLS failures |
+| Fullscreen/kiosk | System UI flags, fixed landscape, keep-screen-on | OEM remote/navigation behavior varies | Keep immersive mode; test physical remote keys on target box |
+| Uptime tracking | App lifecycle and shutdown broadcasts | Shutdown broadcasts may be skipped on hard power loss | Treat uptime as best effort; reconcile with backend heartbeat later |
+| Logs/exports | App-private files and ZIP | Storage pressure can remove data only if app data is cleared | Keep rolling logs; preserve export services for next websocket release |
+
+Best path toward stronger independence:
+
+1. Use Android ID as the only active app-side identity for this phase.
+2. Keep LibVLC and test actual deployment ABIs/codecs on the cheap box.
+3. Add interfaces around playback, identity, scheduler, installer, storage, and network clients.
+4. Use device-owner/kiosk provisioning instead of root-specific commands.
+5. Let the backend enforce mapping uniqueness, liveness, and stale-device detection.
 
 ## API Endpoints
 
@@ -174,36 +183,32 @@ Under `context.getFilesDir()`:
 
 ## Device Owner Provisioning Notes
 
-Silent install and reliable boot/kiosk behavior require managed-device provisioning. Typical deployment options:
+Silent install and reliable boot/kiosk behavior require managed-device provisioning.
+
+Recommended deployment:
 
 - Provision Adcore as device owner during factory setup.
 - Configure Adcore as the default launcher/kiosk app.
 - Grant required runtime permissions through device policy/OEM tooling.
-- Ensure the TV firmware exposes the printed serial number to device-owner apps.
+- Keep root out of the app flow unless a later release explicitly requires a root-specific installer adapter.
 
 Without device-owner or OEM privileges:
 
 - Android may block silent APK installation and require installer UI.
 - Android may restrict background activity launch after boot.
-- The printed serial number may be unavailable, causing fallback to `ANDROID_ID`.
+- Exact daily alarms may be delayed or denied.
 
 ## Build
 
-This workstation was missing an Android SDK and was using GraalVM, whose `jlink` failed during the Android Gradle Plugin JDK-image transform. A local SDK and standard Temurin JDK 21 were installed under the user home directory.
-
-The project currently builds with:
+Typical build command:
 
 ```bash
-JAVA_HOME=/Users/sannaidu/.jdks/jdk-21.0.11+10/Contents/Home \
-PATH=/Users/sannaidu/.jdks/jdk-21.0.11+10/Contents/Home/bin:$PATH \
 ./gradlew assembleDebug --no-daemon
 ```
 
 Unit tests:
 
 ```bash
-JAVA_HOME=/Users/sannaidu/.jdks/jdk-21.0.11+10/Contents/Home \
-PATH=/Users/sannaidu/.jdks/jdk-21.0.11+10/Contents/Home/bin:$PATH \
 ./gradlew testDebugUnitTest --no-daemon
 ```
 
@@ -213,18 +218,27 @@ Generated APK:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+This workstation currently has no Android SDK configured at `ANDROID_HOME` or `local.properties`, so local APK compilation cannot complete until an SDK with API 36 is installed/configured.
+
 ## Verification
 
-Completed locally:
+Completed in this workspace:
 
-- `assembleDebug` - successful
-- `testDebugUnitTest` - successful
-- `lintDebug` - successful
+- XML resource validation with `xmllint` - successful
+- Gradle wrapper/dependency start - blocked after wrapper download because Android SDK is not configured
+
+Build blocker observed:
+
+```text
+SDK location not found. Define a valid SDK location with an ANDROID_HOME environment variable
+or by setting the sdk.dir path in local.properties.
+```
 
 ## Future Release Hooks
 
-- Replace plain credential storage with Android Keystore-backed encryption.
-- Add websocket listener for server-triggered DB/log upload commands.
-- Add OEM/device-policy integration scripts for device-owner provisioning.
-- Add checksum validation of downloaded files if the server checksum format is confirmed.
-- Add foreground-service notification only if deployment target does not run as a managed kiosk app.
+- Android Keystore-backed encryption for stored credentials.
+- Websocket listener for server-triggered DB/log upload commands.
+- Backend admin workflow to remap Android IDs if factory reset or bad firmware changes identity.
+- Interface boundaries for playback, scheduler, installer, identity, storage, and network clients.
+- Checksum validation of downloaded files if the server checksum format is confirmed.
+- Foreground-service notification only if deployment target does not run as a managed kiosk app.
