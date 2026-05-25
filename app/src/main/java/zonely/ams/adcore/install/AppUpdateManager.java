@@ -5,6 +5,7 @@ import android.content.Context;
 import java.io.File;
 
 import zonely.ams.adcore.BuildConfig;
+import zonely.ams.adcore.activity.InstallPromptActivity;
 import zonely.ams.adcore.api.ApiClient;
 import zonely.ams.adcore.config.AppConstants;
 import zonely.ams.adcore.data.AdcoreDatabase;
@@ -31,13 +32,16 @@ public class AppUpdateManager {
         }
         try {
             boolean downloaded = downloadWithRetry();
-            db.setMarker(AppConstants.MARKER_LAST_UPDATE_CHECK_DATE, today);
             if (!downloaded) {
+                db.setMarker(AppConstants.MARKER_LAST_UPDATE_CHECK_DATE, today);
                 return;
             }
             File apk = new File(FileUtils.updatesDir(appContext), "adcore-latest.apk");
-            boolean installStarted = new AppInstaller(appContext).install(apk);
-            AdcoreLogger.i(TAG, "Latest APK install requested. installStarted=" + installStarted);
+            boolean promptStarted = InstallPromptActivity.start(appContext, apk);
+            if (promptStarted) {
+                db.setMarker(AppConstants.MARKER_LAST_UPDATE_CHECK_DATE, today);
+            }
+            AdcoreLogger.i(TAG, "Latest APK install prompt requested. promptStarted=" + promptStarted);
         } catch (Exception exception) {
             AdcoreLogger.e(TAG, "Latest-app check failed.", exception);
         }

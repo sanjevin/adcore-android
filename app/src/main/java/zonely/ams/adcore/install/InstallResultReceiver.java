@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInstaller;
 
+import zonely.ams.adcore.activity.InstallPromptActivity;
 import zonely.ams.adcore.logging.AdcoreLogger;
 
 public class InstallResultReceiver extends BroadcastReceiver {
@@ -19,5 +20,13 @@ public class InstallResultReceiver extends BroadcastReceiver {
         } else {
             AdcoreLogger.e(TAG, "APK install failed. status=" + status + " message=" + message);
         }
+        if (status != PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            InstallState.clear(context);
+        }
+        Intent result = new Intent(InstallPromptActivity.ACTION_INSTALL_RESULT);
+        result.setPackage(context.getPackageName());
+        result.putExtra(InstallPromptActivity.EXTRA_INSTALL_STATUS, status);
+        result.putExtra(InstallPromptActivity.EXTRA_INSTALL_MESSAGE, message);
+        context.sendBroadcast(result);
     }
 }

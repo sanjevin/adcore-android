@@ -6,6 +6,7 @@ import android.content.Intent;
 
 import zonely.ams.adcore.activity.SplashActivity;
 import zonely.ams.adcore.data.AdcoreDatabase;
+import zonely.ams.adcore.install.InstallState;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.scheduler.AdcoreScheduler;
 import zonely.ams.adcore.util.TimeUtils;
@@ -17,6 +18,9 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         String action = intent == null ? "" : intent.getAction();
         AdcoreLogger.i(TAG, "Boot receiver invoked. action=" + action);
+        if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
+            InstallState.clear(context);
+        }
         AdcoreDatabase.getInstance(context).startUptimeSession("DEVICE", TimeUtils.now());
         AdcoreScheduler.scheduleAll(context);
         Intent launch = new Intent(context, SplashActivity.class);

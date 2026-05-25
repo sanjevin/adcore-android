@@ -26,6 +26,7 @@ import org.videolan.libvlc.util.VLCVideoLayout;
 
 import zonely.ams.adcore.R;
 import zonely.ams.adcore.data.AdcoreDatabase;
+import zonely.ams.adcore.install.InstallState;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.model.ResourceItem;
 import zonely.ams.adcore.service.AdcoreSyncService;
@@ -89,6 +90,9 @@ public class AdsActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (holdPlaybackForInstall()) {
+            return;
+        }
         if (!deviceIdOverlayVisible) {
             loadPlaylistAndPlay();
         }
@@ -173,6 +177,9 @@ public class AdsActivity extends BaseActivity {
         if (event == null) {
             return;
         }
+        if (holdPlaybackForInstall()) {
+            return;
+        }
         switch (event.type) {
             case MediaPlayer.Event.Playing:
                 currentStartMs = TimeUtils.now();
@@ -209,6 +216,9 @@ public class AdsActivity extends BaseActivity {
     }
 
     private void loadPlaylistAndPlay() {
+        if (holdPlaybackForInstall()) {
+            return;
+        }
         if (deviceIdOverlayVisible) {
             return;
         }
@@ -232,6 +242,9 @@ public class AdsActivity extends BaseActivity {
     }
 
     private void playCurrent() {
+        if (holdPlaybackForInstall()) {
+            return;
+        }
         if (playlist.isEmpty()) {
             loadPlaylistAndPlay();
             return;
@@ -299,6 +312,9 @@ public class AdsActivity extends BaseActivity {
         }
         deviceIdOverlayVisible = false;
         deviceIdOverlay.setVisibility(View.GONE);
+        if (holdPlaybackForInstall()) {
+            return;
+        }
         if (currentResource != null && currentResource.localCachePath != null
                 && new File(currentResource.localCachePath).exists()) {
             mediaPlayer.play();
@@ -312,6 +328,20 @@ public class AdsActivity extends BaseActivity {
         if (mediaPlayer != null && mediaPlayer.isPlaying()) {
             mediaPlayer.pause();
         }
+    }
+
+    private boolean holdPlaybackForInstall() {
+        if (!InstallState.isPending(this)) {
+            return false;
+        }
+        pausePlayback();
+        emptyMessage.setText(R.string.update_install_waiting);
+        File apkFile = InstallState.getPendingApk(this);
+        if (apkFile != null) {
+            InstallPromptActivity.start(this, apkFile);
+        }
+        AdcoreLogger.i(TAG, "Playback held because update install is pending.");
+        return true;
     }
 
     private void stopPlayback() {
