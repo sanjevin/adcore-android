@@ -4,27 +4,47 @@ plugins {
 
 android {
     namespace 'zonely.ams.adcore'
-    compileSdk 36
+    compileSdk 37
 
     defaultConfig {
         applicationId "zonely.ams.adcore"
-        minSdk 28
-        targetSdk 36
-        versionCode 1
-        versionName "1.0.0"
+        minSdk 23
+        targetSdk 37
+        versionCode 2
+        versionName "26.5.25.1"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        // OPTIMIZATION 1: Drop arm64, x86, and x86_64 native packages completely.
+        // Keeps only the native binaries that match your hardware specifications.
+        ndk {
+            abiFilters "armeabi-v7a"
+        }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            // OPTIMIZATION 2: Turn on code shrinking and dead-code stripping
+            minifyEnabled true
+            shrinkResources true
+
+            // Applies the system base rules alongside our new LibVLC safety exclusions
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+        debug {
+            minifyEnabled false
+            shrinkResources false
+
+            // Keeps debug builds fast on local devices but constrained to the target architecture
+            ndk {
+                abiFilters "armeabi-v7a"
+            }
+        }
     }
+
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_11
-        targetCompatibility JavaVersion.VERSION_11
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
     buildFeatures {
         buildConfig true
@@ -36,6 +56,7 @@ dependencies {
     implementation libs.appcompat
     implementation libs.material
     implementation libs.libvlc.all
+
     testImplementation libs.junit
     androidTestImplementation libs.espresso.core
     androidTestImplementation libs.ext.junit

@@ -1,6 +1,7 @@
 package zonely.ams.adcore.api;
 
 import android.content.Context;
+import android.os.Build;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -195,9 +196,25 @@ public class ApiClient {
             int code = connection.getResponseCode();
             if (code != HttpURLConnection.HTTP_OK) {
                 String error = readBody(connection, code);
-                throw new ApiException(code, error.length() == 0 ? "Download failed with HTTP " + code : error);
+                throw new ApiException(code, error.isEmpty() ? "Download failed with HTTP " + code : error);
             }
-            long total = connection.getContentLengthLong();
+            long total = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                total = connection.getContentLengthLong();
+            } else {
+                // Fallback for older Android versions (API 23 and below)
+                String contentLengthHeader = connection.getHeaderField("Content-Length");
+                if (contentLengthHeader != null && !contentLengthHeader.isEmpty()) {
+                    try {
+                        total = Long.parseLong(contentLengthHeader);
+                    } catch (NumberFormatException e) {
+                        // Fallback to basic int if header parsing fails unexpectedly
+                        total = connection.getContentLength();
+                    }
+                } else {
+                    total = connection.getContentLength();
+                }
+            }
             File parent = targetFile.getParentFile();
             if (parent != null && !parent.exists() && !parent.mkdirs()) {
                 throw new IOException("Unable to create download directory: " + parent.getAbsolutePath());

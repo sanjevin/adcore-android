@@ -19,3 +19,15 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Keep the core native library hooks for VideoLAN
+-keep class org.videolan.libvlc.** { *; }
+-keep class org.videolan.medialibrary.** { *; }
+
+# Prevent R8 from stripping native JNI method links
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# Keep the dynamic surface and video rendering views intact
+-keep class org.videolan.libvlc.util.** { *; }
