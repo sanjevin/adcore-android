@@ -44,18 +44,7 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
 
     @Override
     public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE credentials (" +
-                "id INTEGER PRIMARY KEY CHECK (id = 1)," +
-                "username TEXT NOT NULL," +
-                "password TEXT NOT NULL," +
-                "access_token TEXT," +
-                "refresh_token TEXT," +
-                "token_type TEXT," +
-                "expires_at INTEGER," +
-                "user_id TEXT," +
-                "email TEXT," +
-                "roles TEXT," +
-                "updated_at INTEGER NOT NULL)");
+        createAuthSessionTable(db);
         db.execSQL("CREATE TABLE nodes (" +
                 "id TEXT PRIMARY KEY," +
                 "user_id TEXT," +
@@ -134,9 +123,21 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
     }
 
     @Override
+    public void onOpen(SQLiteDatabase db) {
+        super.onOpen(db);
+        if (!db.isReadOnly()) {
+            createAuthSessionTable(db);
+            ensureAuthSessionColumns(db);
+            migrateAndRemoveLegacyCredentialsTable(db);
+            insertDefaultConfig(db);
+        }
+    }
+
+    @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         AdcoreLogger.w(TAG, "Database upgrade requested from " + oldVersion + " to " + newVersion + ". Fresh schema is used for this initial release.");
         db.execSQL("DROP TABLE IF EXISTS credentials");
+        db.execSQL("DROP TABLE IF EXISTS auth_sessions");
         db.execSQL("DROP TABLE IF EXISTS nodes");
         db.execSQL("DROP TABLE IF EXISTS resources");
         db.execSQL("DROP TABLE IF EXISTS playback_counts");
@@ -149,22 +150,8 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         onCreate(db);
     }
 
-    public synchronized Credentials getCredentials() {
-        Cursor cursor = getReadableDatabase().query("credentials",
-                new String[]{"username", "password"},
-                "id = 1", null, null, null, null);
-        try {
-            if (cursor.moveToFirst()) {
-                return new Credentials(cursor.getString(0), cursor.getString(1));
-            }
-            return null;
-        } finally {
-            cursor.close();
-        }
-    }
-
     public synchronized LoginResult getStoredSession() {
-        Cursor cursor = getReadableDatabase().query("credentials",
+        Cursor cursor = getReadableDatabase().query("auth_sessions",
                 null, "id = 1", null, null, null, null);
         try {
             if (!cursor.moveToFirst()) {
@@ -175,6 +162,8 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
             result.accessToken = cursorValue(cursor, "access_token");
             result.refreshToken = cursorValue(cursor, "refresh_token");
             result.tokenType = cursorValue(cursor, "token_type");
+            result.accessTokenExpiresAt = cursor.isNull(cursor.getColumnIndex("expires_at"))
+                    ? 0L : cursor.getLong(cursor.getColumnIndex("expires_at"));
             result.userId = cursorValue(cursor, "user_id");
             result.username = cursorValue(cursor, "username");
             result.email = cursorValue(cursor, "email");
@@ -185,37 +174,95 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         }
     }
 
-    public synchronized void saveCredentials(String username, String password, LoginResult loginResult) {
-        ContentValues values = new ContentValues();
-        values.put("id", 1);
-        values.put("username", username);
-        values.put("password", password);
-        values.put("access_token", loginResult.accessToken);
-        values.put("refresh_token", loginResult.refreshToken);
-        values.put("token_type", loginResult.tokenType);
-        values.put("expires_at", TimeUtils.now() + (loginResult.expiresIn * 1000L));
-        values.put("user_id", loginResult.userId);
-        values.put("email", loginResult.email);
-        values.put("roles", join(loginResult.roles));
-        values.put("updated_at", TimeUtils.now());
-        // Current release stores credentials in plain SQLite per requirement.
-        // Future release placeholder: encrypt username/password with Android Keystore-backed keys
-        // before persisting, or move to an encrypted credential store.
-        getWritableDatabase().insertWithOnConflict("credentials", null, values, SQLiteDatabase.CONFLICT_REPLACE);
-        AdcoreLogger.i(TAG, "Credentials and login session persisted for username=" + username);
+    public synchronized String getStoredRefreshToken() {
+        Cursor cursor = getReadableDatabase().query("auth_sessions",
+                new String[]{"refresh_token"}, "id = 1", null, null, null, null);
+        try {
+            return cursor.moveToFirst() ? cursor.getString(0) : null;
+        } finally {
+            cursor.close();
+        }
+    }
+
+    public synchronized Credentials getStoredCredentials() {
+        Cursor cursor = getReadableDatabase().query("auth_sessions",
+                new String[]{"username", "password", "credential_recovery_blocked"},
+                "id = 1", null, null, null, null);
+        try {
+            if (!cursor.moveToFirst() || cursor.getInt(2) == 1) {
+                return null;
+            }
+            Credentials credentials = new Credentials(cursor.getString(0), cursor.getString(1));
+            return credentials.isValid() ? credentials : null;
+        } finally {
+            cursor.close();
+        }
     }
 
     public synchronized void saveSession(LoginResult loginResult) {
+        Credentials storedCredentials = getStoredCredentialsIncludingBlocked();
+        saveSession(loginResult,
+                storedCredentials == null ? null : storedCredentials.username,
+                storedCredentials == null ? null : storedCredentials.password,
+                false);
+    }
+
+    public synchronized void saveSession(LoginResult loginResult, String username, String password) {
+        saveSession(loginResult, username, password, false);
+    }
+
+    private synchronized void saveSession(LoginResult loginResult, String username, String password,
+                                          boolean credentialRecoveryBlocked) {
         ContentValues values = new ContentValues();
+        values.put("id", 1);
         values.put("access_token", loginResult.accessToken);
         values.put("refresh_token", loginResult.refreshToken);
         values.put("token_type", loginResult.tokenType);
-        values.put("expires_at", TimeUtils.now() + (loginResult.expiresIn * 1000L));
+        long expiresAt = loginResult.accessTokenExpiresAt > 0L
+                ? loginResult.accessTokenExpiresAt
+                : accessTokenExpiresAt(loginResult.expiresIn);
+        values.put("expires_at", expiresAt);
         values.put("user_id", loginResult.userId);
+        values.put("username", username);
+        values.put("password", password);
         values.put("email", loginResult.email);
         values.put("roles", join(loginResult.roles));
+        values.put("credential_updated_at",
+                username == null || password == null ? null : TimeUtils.now());
+        values.put("credential_recovery_blocked", credentialRecoveryBlocked ? 1 : 0);
         values.put("updated_at", TimeUtils.now());
-        getWritableDatabase().update("credentials", values, "id = 1", null);
+        // Current release stores credentials/tokens in plain SQLite per operating requirement.
+        // Future release placeholder: encrypt username/password/refresh_token with
+        // Android Keystore-backed keys before persisting, or move to an encrypted store.
+        getWritableDatabase().insertWithOnConflict("auth_sessions", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        AdcoreLogger.i(TAG, "Auth session persisted. userId=" + loginResult.userId);
+    }
+
+    public synchronized void clearSession() {
+        int rows = getWritableDatabase().delete("auth_sessions", null, null);
+        AdcoreLogger.i(TAG, "Auth session cleared. rows=" + rows);
+    }
+
+    public synchronized void clearTokensKeepCredentials() {
+        ContentValues values = new ContentValues();
+        values.putNull("access_token");
+        values.putNull("refresh_token");
+        values.putNull("token_type");
+        values.put("expires_at", 0L);
+        values.putNull("user_id");
+        values.putNull("email");
+        values.putNull("roles");
+        values.put("updated_at", TimeUtils.now());
+        int rows = getWritableDatabase().update("auth_sessions", values, "id = 1", null);
+        AdcoreLogger.i(TAG, "Auth tokens cleared while credentials were retained. rows=" + rows);
+    }
+
+    public synchronized void blockCredentialRecovery() {
+        ContentValues values = new ContentValues();
+        values.put("credential_recovery_blocked", 1);
+        values.put("updated_at", TimeUtils.now());
+        int rows = getWritableDatabase().update("auth_sessions", values, "id = 1", null);
+        AdcoreLogger.w(TAG, "Credential recovery blocked for stored session. rows=" + rows);
     }
 
     public synchronized void upsertNode(NodeItem node) {
@@ -391,6 +438,14 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
             AdcoreLogger.w(TAG, "Invalid integer config for " + key + ": " + value, exception);
             return fallback;
         }
+    }
+
+    public synchronized String getConfigString(String key, String fallback) {
+        String value = getMarkerLike("config", "config_key", "config_value", key);
+        if (value == null || value.trim().length() == 0) {
+            return fallback;
+        }
+        return value.trim();
     }
 
     public synchronized String getMarker(String key) {
@@ -600,6 +655,116 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         putDefault(db, AppConstants.CONFIG_BACKGROUND_RETRY_DELAY_SEC, "300");
         putDefault(db, AppConstants.CONFIG_BACKGROUND_RETRY_MAX, "3");
         putDefault(db, AppConstants.CONFIG_DOWNLOAD_THREADS, "4");
+        putDefault(db, AppConstants.CONFIG_DAILY_SYNC_TIME, AppConstants.DEFAULT_DAILY_SYNC_TIME);
+    }
+
+    private void createAuthSessionTable(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS auth_sessions (" +
+                "id INTEGER PRIMARY KEY CHECK (id = 1)," +
+                "username TEXT," +
+                "password TEXT," +
+                "access_token TEXT," +
+                "refresh_token TEXT," +
+                "token_type TEXT," +
+                "expires_at INTEGER," +
+                "user_id TEXT," +
+                "email TEXT," +
+                "roles TEXT," +
+                "credential_updated_at INTEGER," +
+                "credential_recovery_blocked INTEGER NOT NULL DEFAULT 0," +
+                "updated_at INTEGER NOT NULL)");
+    }
+
+    private void ensureAuthSessionColumns(SQLiteDatabase db) {
+        addColumnIfMissing(db, "auth_sessions", "username", "TEXT");
+        addColumnIfMissing(db, "auth_sessions", "password", "TEXT");
+        addColumnIfMissing(db, "auth_sessions", "credential_updated_at", "INTEGER");
+        addColumnIfMissing(db, "auth_sessions", "credential_recovery_blocked", "INTEGER NOT NULL DEFAULT 0");
+    }
+
+    private void migrateAndRemoveLegacyCredentialsTable(SQLiteDatabase db) {
+        if (!tableExists(db, "credentials")) {
+            return;
+        }
+        Cursor cursor = db.query("credentials",
+                new String[]{"access_token", "refresh_token", "token_type", "expires_at", "user_id", "email", "roles", "updated_at"},
+                "id = 1", null, null, null, null);
+        try {
+            if (cursor.moveToFirst()) {
+                String refreshToken = cursorValue(cursor, "refresh_token");
+                if (refreshToken != null && refreshToken.trim().length() > 0) {
+                    ContentValues values = new ContentValues();
+                    values.put("id", 1);
+                    values.put("username", cursorValue(cursor, "username"));
+                    values.put("password", cursorValue(cursor, "password"));
+                    values.put("access_token", cursorValue(cursor, "access_token"));
+                    values.put("refresh_token", refreshToken);
+                    values.put("token_type", cursorValue(cursor, "token_type"));
+                    values.put("expires_at", cursorValue(cursor, "expires_at"));
+                    values.put("user_id", cursorValue(cursor, "user_id"));
+                    values.put("email", cursorValue(cursor, "email"));
+                    values.put("roles", cursorValue(cursor, "roles"));
+                    values.put("credential_updated_at", TimeUtils.now());
+                    values.put("credential_recovery_blocked", 0);
+                    values.put("updated_at", TimeUtils.now());
+                    db.insertWithOnConflict("auth_sessions", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+                    AdcoreLogger.i(TAG, "Legacy credential table migrated to auth session.");
+                }
+            }
+        } finally {
+            cursor.close();
+        }
+        db.execSQL("DROP TABLE IF EXISTS credentials");
+        AdcoreLogger.i(TAG, "Legacy credential table removed.");
+    }
+
+    private boolean tableExists(SQLiteDatabase db, String tableName) {
+        Cursor cursor = db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                new String[]{tableName});
+        try {
+            return cursor.moveToFirst();
+        } finally {
+            cursor.close();
+        }
+    }
+
+    private void addColumnIfMissing(SQLiteDatabase db, String tableName, String columnName, String columnDefinition) {
+        if (!columnExists(db, tableName, columnName)) {
+            db.execSQL("ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnDefinition);
+        }
+    }
+
+    private boolean columnExists(SQLiteDatabase db, String tableName, String columnName) {
+        Cursor cursor = db.rawQuery("PRAGMA table_info(" + tableName + ")", null);
+        try {
+            while (cursor.moveToNext()) {
+                if (columnName.equals(cursor.getString(1))) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            cursor.close();
+        }
+    }
+
+    private Credentials getStoredCredentialsIncludingBlocked() {
+        Cursor cursor = getReadableDatabase().query("auth_sessions",
+                new String[]{"username", "password"}, "id = 1", null, null, null, null);
+        try {
+            if (!cursor.moveToFirst()) {
+                return null;
+            }
+            Credentials credentials = new Credentials(cursor.getString(0), cursor.getString(1));
+            return credentials.isValid() ? credentials : null;
+        } finally {
+            cursor.close();
+        }
+    }
+
+    private long accessTokenExpiresAt(long expiresInSeconds) {
+        long ttlMs = expiresInSeconds > 0L ? expiresInSeconds * 1000L : AppConstants.DEFAULT_ACCESS_TOKEN_TTL_MS;
+        return TimeUtils.now() + ttlMs;
     }
 
     private void putDefault(SQLiteDatabase db, String key, String value) {

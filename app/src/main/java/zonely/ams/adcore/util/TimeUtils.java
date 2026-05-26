@@ -46,17 +46,29 @@ public final class TimeUtils {
     }
 
     public static long todayAt0030() {
-        LocalDateTime local = LocalDate.now().atTime(LocalTime.of(0, 30));
-        return local.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        return todayAtLocalTime(0, 30);
     }
 
     public static long next0030() {
+        return nextLocalTime(0, 30);
+    }
+
+    public static long todayAtLocalTime(int hour, int minute) {
+        LocalDateTime local = LocalDate.now().atTime(LocalTime.of(hour, minute));
+        return local.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+    }
+
+    public static long nextLocalTime(int hour, int minute) {
         LocalDate today = LocalDate.now();
-        LocalDateTime next = today.atTime(LocalTime.of(0, 30));
+        LocalDateTime next = today.atTime(LocalTime.of(hour, minute));
         if (next.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli() <= now()) {
-            next = today.plusDays(1).atTime(LocalTime.of(0, 30));
+            next = today.plusDays(1).atTime(LocalTime.of(hour, minute));
         }
         return next.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+    }
+
+    public static String formatLocalTime(int hour, int minute) {
+        return LocalTime.of(hour, minute).toString();
     }
 
     public static String isoLocalDateFromMillis(long millis) {

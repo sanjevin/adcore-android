@@ -1,7 +1,10 @@
 package zonely.ams.adcore.activity;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.view.KeyEvent;
@@ -15,7 +18,11 @@ import android.widget.CompoundButton;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import androidx.core.content.ContextCompat;
+
+import zonely.ams.adcore.config.AppConstants;
 import zonely.ams.adcore.logging.AdcoreLogger;
+import zonely.ams.adcore.session.AuthPolicy;
 
 public class BaseActivity extends Activity implements
         View.OnClickListener,
@@ -26,6 +33,14 @@ public class BaseActivity extends Activity implements
         View.OnTouchListener,
         View.OnKeyListener,
         SeekBar.OnSeekBarChangeListener {
+    private boolean sessionExpiredReceiverRegistered;
+
+    private final BroadcastReceiver sessionExpiredReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            handleSessionExpired(intent);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -38,9 +53,21 @@ public class BaseActivity extends Activity implements
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        registerSessionExpiredReceiver();
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         enterFullscreen();
+    }
+
+    @Override
+    protected void onStop() {
+        unregisterSessionExpiredReceiver();
+        super.onStop();
     }
 
     @Override
@@ -176,5 +203,34 @@ public class BaseActivity extends Activity implements
 
     protected int backgroundColor() {
         return Color.rgb(6, 9, 14);
+    }
+
+    private void registerSessionExpiredReceiver() {
+        if (sessionExpiredReceiverRegistered || this instanceof LoginActivity) {
+            return;
+        }
+        IntentFilter filter = new IntentFilter(AppConstants.ACTION_SESSION_EXPIRED);
+        ContextCompat.registerReceiver(this, sessionExpiredReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        sessionExpiredReceiverRegistered = true;
+    }
+
+    private void unregisterSessionExpiredReceiver() {
+        if (sessionExpiredReceiverRegistered) {
+            unregisterReceiver(sessionExpiredReceiver);
+            sessionExpiredReceiverRegistered = false;
+        }
+    }
+
+    private void handleSessionExpired(Intent intent) {
+        if (this instanceof LoginActivity) {
+            return;
+        }
+        String message = intent == null ? null : intent.getStringExtra(AppConstants.EXTRA_SESSION_MESSAGE);
+        Intent login = new Intent(this, LoginActivity.class);
+        login.putExtra(LoginActivity.EXTRA_LOGIN_MESSAGE,
+                message == null || message.trim().length() == 0 ? AuthPolicy.SESSION_EXPIRED_MESSAGE : message);
+        login.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        startActivity(login);
+        finish();
     }
 }

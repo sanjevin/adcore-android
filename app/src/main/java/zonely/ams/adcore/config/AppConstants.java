@@ -13,6 +13,8 @@ public final class AppConstants {
     public static final long SPLASH_DURATION_MS = 5000L;
     public static final long MAX_LOG_FILE_BYTES = 10L * 1024L * 1024L;
     public static final int MAX_LOG_FILES = 10;
+    public static final long DEFAULT_ACCESS_TOKEN_TTL_MS = 60L * 60L * 1000L;
+    public static final long ACCESS_TOKEN_REFRESH_MARGIN_MS = 5L * 60L * 1000L;
 
     public static final String MARKER_LAST_DAILY_SYNC_SUCCESS = "last_daily_sync_success_at";
     public static final String MARKER_LAST_AUDIT_SENT_DATE = "last_audit_sent_date";
@@ -22,6 +24,10 @@ public final class AppConstants {
     public static final String CONFIG_BACKGROUND_RETRY_DELAY_SEC = "background_retry_delay_sec";
     public static final String CONFIG_BACKGROUND_RETRY_MAX = "background_retry_max";
     public static final String CONFIG_DOWNLOAD_THREADS = "download_threads";
+    public static final String CONFIG_DAILY_SYNC_TIME = "daily_sync_time";
+    public static final String DEFAULT_DAILY_SYNC_TIME = "00:30";
+    public static final String ACTION_SESSION_EXPIRED = "zonely.ams.adcore.action.SESSION_EXPIRED";
+    public static final String EXTRA_SESSION_MESSAGE = "session_message";
 
     private AppConstants() {
     }

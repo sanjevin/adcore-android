@@ -29,6 +29,7 @@ import zonely.ams.adcore.data.AdcoreDatabase;
 import zonely.ams.adcore.install.InstallState;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.model.ResourceItem;
+import zonely.ams.adcore.scheduler.DailySyncCoordinator;
 import zonely.ams.adcore.service.AdcoreSyncService;
 import zonely.ams.adcore.sync.SyncProgressBroadcaster;
 import zonely.ams.adcore.util.DeviceIdProvider;
@@ -38,6 +39,7 @@ import zonely.ams.adcore.util.TimeUtils;
 public class AdsActivity extends BaseActivity {
     private static final String TAG = "AdsActivity";
     private static final long DEVICE_ID_OVERLAY_MS = 60000L;
+    private static volatile boolean active;
     private VLCVideoLayout videoLayout;
     private LibVLC libVLC;
     private MediaPlayer mediaPlayer;
@@ -48,7 +50,9 @@ public class AdsActivity extends BaseActivity {
     private final List<ResourceItem> playlist = new ArrayList<>();
     private boolean viewsAttached;
     private boolean receiverRegistered;
+    private boolean dailySyncReceiverRegistered;
     private boolean deviceIdOverlayVisible;
+    private boolean dailySyncPendingAfterCurrent;
     private int index;
     private long currentStartMs;
     private ResourceItem currentResource;
@@ -58,6 +62,15 @@ public class AdsActivity extends BaseActivity {
         public void onReceive(Context context, Intent intent) {
             if (intent != null && intent.getBooleanExtra(SyncProgressBroadcaster.EXTRA_UNMAPPED_DEVICE, false)) {
                 openUnmappedDeviceScreen();
+            }
+        }
+    };
+
+    private final BroadcastReceiver dailySyncReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent != null && DailySyncCoordinator.ACTION_DAILY_SYNC_DUE.equals(intent.getAction())) {
+                handleDailySyncDue();
             }
         }
     };
@@ -83,14 +96,20 @@ public class AdsActivity extends BaseActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        active = true;
         attachPlayerViews();
         registerSyncReceiver();
+        registerDailySyncReceiver();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         if (holdPlaybackForInstall()) {
+            return;
+        }
+        if (DailySyncCoordinator.isPending(this)) {
+            handleDailySyncDue();
             return;
         }
         if (!deviceIdOverlayVisible) {
@@ -106,7 +125,9 @@ public class AdsActivity extends BaseActivity {
 
     @Override
     protected void onStop() {
+        active = false;
         unregisterSyncReceiver();
+        unregisterDailySyncReceiver();
         handler.removeCallbacks(hideDeviceIdOverlayRunnable);
         deviceIdOverlayVisible = false;
         deviceIdOverlay.setVisibility(View.GONE);
@@ -194,7 +215,11 @@ public class AdsActivity extends BaseActivity {
                 AdcoreLogger.e(TAG, "LibVLC playback error. resourceId="
                         + (currentResource == null ? null : currentResource.id)
                         + " file=" + (currentResource == null ? null : currentResource.localCachePath));
-                playNext();
+                if (isDailySyncPending()) {
+                    openForegroundDailySync();
+                } else {
+                    playNext();
+                }
                 break;
             default:
                 break;
@@ -274,6 +299,10 @@ public class AdsActivity extends BaseActivity {
                     : (int) Math.max(0L, (TimeUtils.now() - currentStartMs) / 1000L);
             AdcoreDatabase.getInstance(this).incrementPlayback(currentResource.id, playedSeconds);
             AdcoreLogger.i(TAG, "Video completed. resourceId=" + currentResource.id + " playedSeconds=" + playedSeconds);
+        }
+        if (isDailySyncPending()) {
+            openForegroundDailySync();
+            return;
         }
         playNext();
     }
@@ -360,6 +389,7 @@ public class AdsActivity extends BaseActivity {
             libVLC.release();
             libVLC = null;
         }
+        viewsAttached = false;
     }
 
     private void registerSyncReceiver() {
@@ -376,6 +406,71 @@ public class AdsActivity extends BaseActivity {
             unregisterReceiver(syncReceiver);
             receiverRegistered = false;
         }
+    }
+
+    private void registerDailySyncReceiver() {
+        if (dailySyncReceiverRegistered) {
+            return;
+        }
+        IntentFilter filter = new IntentFilter(DailySyncCoordinator.ACTION_DAILY_SYNC_DUE);
+        ContextCompat.registerReceiver(this, dailySyncReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        dailySyncReceiverRegistered = true;
+    }
+
+    private void unregisterDailySyncReceiver() {
+        if (dailySyncReceiverRegistered) {
+            unregisterReceiver(dailySyncReceiver);
+            dailySyncReceiverRegistered = false;
+        }
+    }
+
+    private void handleDailySyncDue() {
+        if (!DailySyncCoordinator.isPending(this)) {
+            DailySyncCoordinator.requestForegroundSync(this);
+        }
+        if (shouldWaitForCurrentVideoBeforeDailySync()) {
+            dailySyncPendingAfterCurrent = true;
+            AdcoreLogger.i(TAG, "Daily sync due; waiting for current video to complete. resourceId="
+                    + currentResource.id);
+            return;
+        }
+        openForegroundDailySync();
+    }
+
+    private boolean shouldWaitForCurrentVideoBeforeDailySync() {
+        return currentResource != null
+                && mediaPlayer != null
+                && (mediaPlayer.isPlaying() || deviceIdOverlayVisible);
+    }
+
+    private boolean isDailySyncPending() {
+        return dailySyncPendingAfterCurrent || DailySyncCoordinator.isPending(this);
+    }
+
+    private void openForegroundDailySync() {
+        dailySyncPendingAfterCurrent = false;
+        DailySyncCoordinator.clearPending(this);
+        handler.removeCallbacksAndMessages(null);
+        closePlaybackForForegroundSync();
+        AdcoreLogger.i(TAG, "Opening foreground daily sync after current video. AdsActivity playback resources closed.");
+        Intent intent = new Intent(this, SyncActivity.class);
+        intent.putExtra(SyncActivity.EXTRA_FOREGROUND_DAILY_SYNC, true);
+        startActivity(intent);
+        finish();
+    }
+
+    private void closePlaybackForForegroundSync() {
+        deviceIdOverlayVisible = false;
+        if (deviceIdOverlay != null) {
+            deviceIdOverlay.setVisibility(View.GONE);
+        }
+        stopPlayback();
+        detachPlayerViews();
+        releaseVlcPlayer();
+    }
+
+    public static boolean isActive() {
+        return active;
     }
 
     private void openUnmappedDeviceScreen() {

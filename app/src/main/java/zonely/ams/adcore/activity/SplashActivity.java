@@ -17,7 +17,7 @@ public class SplashActivity extends BaseActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        SessionManager.startStoredCredentialLogin(this);
+        SessionManager.startStoredSessionRefresh(this);
         setContentView(R.layout.activity_splash);
 
         handler.postDelayed(new Runnable() {

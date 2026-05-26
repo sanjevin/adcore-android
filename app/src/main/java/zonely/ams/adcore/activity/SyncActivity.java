@@ -23,12 +23,14 @@ import zonely.ams.adcore.R;
 import zonely.ams.adcore.data.AdcoreDatabase;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.scheduler.AdcoreScheduler;
+import zonely.ams.adcore.scheduler.DailySyncCoordinator;
 import zonely.ams.adcore.service.AdcoreSyncService;
 import zonely.ams.adcore.sync.SyncProgressBroadcaster;
 import zonely.ams.adcore.util.DeviceIdProvider;
 
 public class SyncActivity extends BaseActivity {
     public static final String EXTRA_SHOW_UNMAPPED_DEVICE = "show_unmapped_device";
+    public static final String EXTRA_FOREGROUND_DAILY_SYNC = "foreground_daily_sync";
     private static final String TAG = "SyncActivity";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Map<String, ProgressRow> rows = new LinkedHashMap<>();
@@ -50,13 +52,20 @@ public class SyncActivity extends BaseActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (AdcoreScheduler.isDailySyncDue(this)) {
-            AdcoreLogger.i(TAG, "Missed 00:30 daily pull detected; this SyncActivity run will refresh resources and update the daily marker.");
-        }
         buildUi();
         registerProgressReceiver();
         if (getIntent().getBooleanExtra(EXTRA_SHOW_UNMAPPED_DEVICE, false)) {
             showUnmappedDeviceScreen();
+            return;
+        }
+        if (getIntent().getBooleanExtra(EXTRA_FOREGROUND_DAILY_SYNC, false)) {
+            startDailyForegroundSync();
+            return;
+        }
+        if (AdcoreScheduler.isDailySyncDue(this)) {
+            AdcoreLogger.i(TAG, "Missed " + AdcoreScheduler.dailySyncTimeLabel(this)
+                    + " daily pull detected; starting foreground daily sync.");
+            startDailyForegroundSync();
             return;
         }
         boolean hasCache = AdcoreDatabase.getInstance(this).hasCachedVideos();
@@ -111,20 +120,34 @@ public class SyncActivity extends BaseActivity {
         headline.setText(R.string.syncing_resources);
         progressContainer.setVisibility(View.VISIBLE);
         unmappedContainer.setVisibility(View.GONE);
-        startForegroundSyncWhenIdle();
+        startForegroundSyncWhenIdle(false);
     }
 
-    private void startForegroundSyncWhenIdle() {
+    private void startDailyForegroundSync() {
+        DailySyncCoordinator.clearPending(this);
+        rows.clear();
+        list.removeAllViews();
+        headline.setText(R.string.syncing_resources);
+        progressContainer.setVisibility(View.VISIBLE);
+        unmappedContainer.setVisibility(View.GONE);
+        startForegroundSyncWhenIdle(true);
+    }
+
+    private void startForegroundSyncWhenIdle(final boolean dailyPull) {
         if (AdcoreSyncService.isRunning()) {
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    startForegroundSyncWhenIdle();
+                    startForegroundSyncWhenIdle(dailyPull);
                 }
             }, 500L);
             return;
         }
-        AdcoreSyncService.startInitial(this, true);
+        if (dailyPull) {
+            AdcoreSyncService.startDaily(this, true);
+        } else {
+            AdcoreSyncService.startInitial(this, true);
+        }
     }
 
     private void showUnmappedDeviceScreen() {

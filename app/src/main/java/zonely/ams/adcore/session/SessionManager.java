@@ -16,7 +16,7 @@ public final class SessionManager {
     public static final int IDLE = 0;
     public static final int IN_PROGRESS = 1;
     public static final int SUCCESS = 2;
-    public static final int NO_CREDENTIALS = 3;
+    public static final int NO_SESSION = 3;
     public static final int FAILED = 4;
 
     private static final String TAG = "SessionManager";
@@ -31,39 +31,40 @@ public final class SessionManager {
         LoginResult stored = AdcoreDatabase.getInstance(context).getStoredSession();
         if (stored != null && stored.accessToken != null) {
             AdcoreContext.setLoginResult(stored);
-            AdcoreLogger.i(TAG, "Stored access token loaded into AppContext.");
+            AdcoreLogger.i(TAG, "Stored token session loaded into AppContext.");
         }
     }
 
-    public static void startStoredCredentialLogin(final Context context) {
+    public static void startStoredSessionRefresh(final Context context) {
         synchronized (LOCK) {
             if (startupState == IN_PROGRESS) {
                 return;
             }
             startupState = IN_PROGRESS;
-            startupMessage = "Checking stored credentials";
+            startupMessage = "Checking saved session";
         }
         AppExecutors.io().execute(new Runnable() {
             @Override
             public void run() {
                 AdcoreDatabase db = AdcoreDatabase.getInstance(context);
-                Credentials credentials = db.getCredentials();
-                if (credentials == null || !credentials.isValid()) {
-                    finishStartup(NO_CREDENTIALS, "No stored credentials found");
+                LoginResult stored = db.getStoredSession();
+                Credentials credentials = db.getStoredCredentials();
+                if ((stored == null || stored.refreshToken == null || stored.refreshToken.trim().length() == 0)
+                        && (credentials == null || !credentials.isValid())) {
+                    AdcoreContext.clear();
+                    finishStartup(NO_SESSION, "No saved session found");
                     return;
                 }
                 try {
-                    AdcoreLogger.i(TAG, "Stored credentials found; attempting implicit login.");
-                    LoginResult result = new ApiClient(context).login(credentials.username, credentials.password);
-                    db.saveSession(result);
-                    AdcoreContext.setLoginResult(result);
+                    AdcoreLogger.i(TAG, "Saved session found; validating token before startup.");
+                    new ApiClient(context).ensureAuthenticatedSession();
                     AdcoreScheduler.scheduleImmediateAppUpdate(context);
-                    finishStartup(SUCCESS, "Implicit login successful");
+                    finishStartup(SUCCESS, "Saved session ready");
                 } catch (ApiException exception) {
-                    finishStartup(FAILED, exception.getMessage());
+                    finishStartup(FAILED, startupFailureMessage(exception));
                 } catch (Exception exception) {
-                    AdcoreLogger.e(TAG, "Unexpected implicit login failure.", exception);
-                    finishStartup(FAILED, exception.getMessage());
+                    AdcoreLogger.e(TAG, "Unexpected session validation failure.", exception);
+                    finishStartup(FAILED, AuthPolicy.SESSION_EXPIRED_MESSAGE);
                 }
             }
         });
@@ -72,15 +73,38 @@ public final class SessionManager {
     public static LoginResult loginAndPersist(Context context, String username, String password) {
         try {
             LoginResult result = new ApiClient(context).login(username, password);
-            AdcoreDatabase.getInstance(context).saveCredentials(username, password, result);
+            AdcoreDatabase.getInstance(context).saveSession(result, username, password);
             AdcoreContext.setLoginResult(result);
             return result;
         } catch (ApiException exception) {
+            if (isAccountLocked(exception)) {
+                AdcoreLogger.w(TAG, "Login rejected because account is locked. username=" + username);
+                return LoginResult.locked(AuthPolicy.LOCKED_ACCOUNT_MESSAGE);
+            }
             return LoginResult.failure(exception.getMessage());
         } catch (Exception exception) {
             AdcoreLogger.e(TAG, "Login failed unexpectedly.", exception);
             return LoginResult.failure(exception.getMessage());
         }
+    }
+
+    public static void logout(Context context) {
+        String refreshToken = AdcoreContext.getRefreshToken();
+        if (refreshToken == null || refreshToken.trim().length() == 0) {
+            refreshToken = AdcoreDatabase.getInstance(context).getStoredRefreshToken();
+        }
+        try {
+            new ApiClient(context).logout(refreshToken);
+        } catch (Exception exception) {
+            AdcoreLogger.w(TAG, "Logout API failed; local session will still be cleared.", exception);
+        } finally {
+            clearSession(context);
+        }
+    }
+
+    public static void clearSession(Context context) {
+        AdcoreDatabase.getInstance(context).clearSession();
+        AdcoreContext.clear();
     }
 
     public static int getStartupState() {
@@ -126,5 +150,22 @@ public final class SessionManager {
             LOCK.notifyAll();
         }
         AdcoreLogger.i(TAG, "Startup login state=" + state + " message=" + message);
+    }
+
+    private static boolean isAccountLocked(ApiException exception) {
+        if (exception == null) {
+            return false;
+        }
+        return AuthPolicy.isAccountLocked(exception.getApiCode(), exception.getMessage());
+    }
+
+    private static String startupFailureMessage(ApiException exception) {
+        if (isAccountLocked(exception)) {
+            return AuthPolicy.LOCKED_ACCOUNT_MESSAGE;
+        }
+        String message = exception == null ? null : exception.getMessage();
+        return message == null || message.trim().length() == 0
+                ? AuthPolicy.SESSION_EXPIRED_MESSAGE
+                : message;
     }
 }

@@ -1,6 +1,7 @@
 <resources>
     <string name="app_name">adcore</string>
     <string name="device_admin_description">Allows adcore to manage kiosk updates on dedicated TV devices.</string>
+    <string name="checking_session">Checking saved session</string>
     <string name="logging_in">Logging in</string>
     <string name="username_or_email">Username or email</string>
     <string name="password">Password</string>

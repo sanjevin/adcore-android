@@ -89,11 +89,33 @@ Video download failures are logged with full stack trace plus resource metadata:
 
 Daily sync still compares resources by `id`, updates metadata changes, downloads new/changed videos, and deletes missing resources plus their cached files.
 
+The daily sync time is controlled by the SQLite config key `daily_sync_time` in `HH:mm` 24-hour local-device time. The default is `00:30`.
+
+At the configured time:
+
+- The app calls `getMappedResources/{deviceId}` and performs the daily resource comparison.
+- If `AdsActivity` is playing a video, it lets the current video finish, persists playback counters, closes playback resources, and then opens `SyncActivity`.
+- `SyncActivity` stays in the foreground and displays sync progress rows/progress bars while the sync worker runs.
+- After sync completes, the app starts a fresh `AdsActivity` and reloads playback from the refreshed cache.
+- If foreground launch fails immediately, the scheduler keeps a background retry fallback.
+
 ### Audit And Device Data
 
-Previous-day audit payloads are sent with `sendDeviceData`. The request body contains `deviceId`; the endpoint is `POST /deviceManagement/saveDeviceData`.
+Previous-day audit payloads are sent with `sendDeviceData`. The request body contains `deviceId`; the endpoint is `POST /deviceManagement/saveDeviceData/{deviceId}`.
 
-Credentials remain stored in plain SQLite for this release per requirement. The database code contains placeholders for a future Android Keystore-backed encryption release.
+### Authentication
+
+The app stores credentials for emergency recovery, but credentials are not used as the normal session path.
+
+- Login stores username/password, access token, refresh token, token type, and access-token expiry in SQLite table `auth_sessions`.
+- Current release stores these values in plain SQLite per operating requirement. The DB layer has placeholders for future Android Keystore-backed encryption of username/password/refresh token.
+- Before every authenticated API call, the app checks `accessTokenExpiresAt`; if less than 5 minutes remain, it refreshes first using `POST /auth/refresh` with `X-Refresh-Token`.
+- If refresh succeeds, the rotated refresh token and new access-token expiry are saved immediately.
+- If refresh fails, the app performs one credential-login recovery using the stored username/password, saves the new token pair, and retries the original API.
+- Access-token `401` responses are treated as an exceptional fallback: refresh/recover once and retry the authenticated API once. The app does not loop beyond that single recovery pass.
+- If refresh and credential recovery both fail, access/refresh tokens are cleared while credentials are retained for manual recovery; locked or rejected credentials are marked so automatic recovery does not loop.
+- Logout support calls `POST /auth/logout` with `X-Refresh-Token`, then clears local tokens and stored credentials.
+- Login failures containing `locked` or stable code `ACCOUNT_LOCKED` show a clear locked-account message during both startup auto-login and manual login, and are not automatically retried.
 
 ## Device ID Advice
 
@@ -142,18 +164,20 @@ Best path toward stronger independence:
 Configured in `ApiConfig`:
 
 - `POST /auth/login`
+- `POST /auth/refresh` with `X-Refresh-Token`
+- `POST /auth/logout` with `X-Refresh-Token`
 - `GET /deviceManagement/getMappedResources/{deviceId}`
 - `GET /resources/download/{resourceId}`
 - `POST /deviceManagement/saveDeviceLogs`
 - `POST /deviceManagement/saveDeviceDB/{deviceId}`
-- `POST /deviceManagement/saveDeviceData`
+- `POST /deviceManagement/saveDeviceData/{deviceId}`
 - `GET /deviceManagement/downloadLatestApp?appVersion={version}`
 
-All authenticated calls attach the current `Authorization: Bearer <accessToken>` header when available.
+All authenticated calls attach the current `Authorization: Bearer <accessToken>` header when available. The app refreshes before access-token expiry and only uses `401` handling as an exceptional fallback.
 
 ## SQLite Tables
 
-- `credentials`
+- `auth_sessions`
 - `nodes`
 - `resources`
 - `playback_counts`
@@ -164,13 +188,14 @@ All authenticated calls attach the current `Authorization: Bearer <accessToken>`
 - `uptime_sessions`
 - `sent_error_logs`
 
-Default configurable retry values:
+Default configurable values:
 
 - `api_retry_delay_sec = 5`
 - `api_retry_max = 3`
 - `background_retry_delay_sec = 300`
 - `background_retry_max = 3`
 - `download_threads = 4`
+- `daily_sync_time = 00:30`
 
 ## App-Private Storage
 
@@ -218,25 +243,16 @@ Generated APK:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-This workstation currently has no Android SDK configured at `ANDROID_HOME` or `local.properties`, so local APK compilation cannot complete until an SDK with API 36 is installed/configured.
-
 ## Verification
 
 Completed in this workspace:
 
-- XML resource validation with `xmllint` - successful
-- Gradle wrapper/dependency start - blocked after wrapper download because Android SDK is not configured
-
-Build blocker observed:
-
-```text
-SDK location not found. Define a valid SDK location with an ANDROID_HOME environment variable
-or by setting the sdk.dir path in local.properties.
-```
+- `git diff --check`
+- `./gradlew assembleDebug testDebugUnitTest --no-daemon`
 
 ## Future Release Hooks
 
-- Android Keystore-backed encryption for stored credentials.
+- Android Keystore-backed encryption for stored username/password and refresh tokens.
 - Websocket listener for server-triggered DB/log upload commands.
 - Backend admin workflow to remap Android IDs if factory reset or bad firmware changes identity.
 - Interface boundaries for playback, scheduler, installer, identity, storage, and network clients.

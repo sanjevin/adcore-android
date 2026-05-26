@@ -35,7 +35,8 @@ public final class AdcoreScheduler {
 
     public static void scheduleDailySyncAlarm(Context context) {
         Context appContext = context.getApplicationContext();
-        long triggerAt = TimeUtils.next0030();
+        DailySyncTime syncTime = dailySyncTime(appContext);
+        long triggerAt = TimeUtils.nextLocalTime(syncTime.hour, syncTime.minute);
         Intent intent = new Intent(appContext, DailySyncAlarmReceiver.class);
         PendingIntent pendingIntent = PendingIntent.getBroadcast(appContext, 3001, intent, pendingFlags());
         AlarmManager alarmManager = (AlarmManager) appContext.getSystemService(Context.ALARM_SERVICE);
@@ -49,7 +50,8 @@ public final class AdcoreScheduler {
             } else {
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent);
             }
-            AdcoreLogger.i(TAG, "Daily sync exact alarm scheduled for " + TimeUtils.isoUtc(triggerAt));
+            AdcoreLogger.i(TAG, "Daily sync exact alarm scheduled for " + TimeUtils.isoUtc(triggerAt)
+                    + " localTime=" + syncTime.label);
         } catch (SecurityException exception) {
             AdcoreLogger.w(TAG, "Exact alarm permission unavailable; falling back to inexact daily sync alarm.", exception);
             alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent);
@@ -69,14 +71,16 @@ public final class AdcoreScheduler {
 
     public static void ensureMissedDailySync(Context context) {
         if (isDailySyncDue(context)) {
-            AdcoreLogger.i(TAG, "Missed 00:30 daily sync detected. Scheduling immediate daily sync.");
+            AdcoreLogger.i(TAG, "Missed " + dailySyncTimeLabel(context)
+                    + " daily sync detected. Scheduling immediate daily sync.");
             scheduleImmediateDailySync(context);
         }
     }
 
     public static boolean isDailySyncDue(Context context) {
         AdcoreDatabase db = AdcoreDatabase.getInstance(context);
-        long today0030 = TimeUtils.todayAt0030();
+        DailySyncTime syncTime = dailySyncTime(context);
+        long todaySyncAt = TimeUtils.todayAtLocalTime(syncTime.hour, syncTime.minute);
         long now = TimeUtils.now();
         String lastValue = db.getMarker(AppConstants.MARKER_LAST_DAILY_SYNC_SUCCESS);
         long lastSuccess = 0L;
@@ -87,7 +91,11 @@ public final class AdcoreScheduler {
                 lastSuccess = 0L;
             }
         }
-        return now > today0030 && lastSuccess < today0030;
+        return now > todaySyncAt && lastSuccess < todaySyncAt;
+    }
+
+    public static String dailySyncTimeLabel(Context context) {
+        return dailySyncTime(context).label;
     }
 
     public static void scheduleHourlyLogScan(Context context) {
@@ -139,5 +147,39 @@ public final class AdcoreScheduler {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
         return flags;
+    }
+
+    private static DailySyncTime dailySyncTime(Context context) {
+        String value = AdcoreDatabase.getInstance(context).getConfigString(
+                AppConstants.CONFIG_DAILY_SYNC_TIME,
+                AppConstants.DEFAULT_DAILY_SYNC_TIME);
+        String[] parts = value.split(":", -1);
+        try {
+            if (parts.length != 2) {
+                throw new IllegalArgumentException("Expected HH:mm");
+            }
+            int hour = Integer.parseInt(parts[0]);
+            int minute = Integer.parseInt(parts[1]);
+            if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+                throw new IllegalArgumentException("Time out of range");
+            }
+            return new DailySyncTime(hour, minute);
+        } catch (Exception exception) {
+            AdcoreLogger.w(TAG, "Invalid daily sync time config: " + value
+                    + ". Falling back to " + AppConstants.DEFAULT_DAILY_SYNC_TIME, exception);
+            return new DailySyncTime(0, 30);
+        }
+    }
+
+    private static final class DailySyncTime {
+        final int hour;
+        final int minute;
+        final String label;
+
+        DailySyncTime(int hour, int minute) {
+            this.hour = hour;
+            this.minute = minute;
+            this.label = TimeUtils.formatLocalTime(hour, minute);
+        }
     }
 }

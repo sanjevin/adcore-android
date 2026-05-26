@@ -27,7 +27,7 @@
             android:layout_marginTop="18dp"
             android:gravity="center"
             android:includeFontPadding="true"
-            android:text="@string/logging_in"
+            android:text="@string/checking_session"
             android:textColor="@color/white"
             android:textSize="24sp" />
     </LinearLayout>
