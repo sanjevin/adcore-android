@@ -15,9 +15,12 @@ public final class AppConstants {
     public static final int MAX_LOG_FILES = 10;
     public static final long DEFAULT_ACCESS_TOKEN_TTL_MS = 60L * 60L * 1000L;
     public static final long ACCESS_TOKEN_REFRESH_MARGIN_MS = 5L * 60L * 1000L;
+    public static final long DEVICE_DATA_UPLOAD_INTERVAL_MINUTES = 10L;
+    public static final long DEVICE_DATA_UPLOAD_INTERVAL_MS = DEVICE_DATA_UPLOAD_INTERVAL_MINUTES * 60L * 1000L;
 
     public static final String MARKER_LAST_DAILY_SYNC_SUCCESS = "last_daily_sync_success_at";
     public static final String MARKER_LAST_AUDIT_SENT_DATE = "last_audit_sent_date";
+    public static final String MARKER_LAST_DEVICE_DATA_UPLOAD_AT = "last_device_data_upload_at";
     public static final String MARKER_LAST_UPDATE_CHECK_DATE = "last_update_check_date";
     public static final String CONFIG_API_RETRY_DELAY_SEC = "api_retry_delay_sec";
     public static final String CONFIG_API_RETRY_MAX = "api_retry_max";

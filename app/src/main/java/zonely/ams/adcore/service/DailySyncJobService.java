@@ -3,7 +3,6 @@ package zonely.ams.adcore.service;
 import android.app.job.JobParameters;
 import android.app.job.JobService;
 
-import zonely.ams.adcore.export.AuditManager;
 import zonely.ams.adcore.export.ExportManager;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.sync.SyncResult;
@@ -23,7 +22,6 @@ public class DailySyncJobService extends JobService {
                     SyncResult result = new SyncManager(DailySyncJobService.this).runDailyPull(false);
                     retry = !result.success;
                     if (result.success) {
-                        new AuditManager(DailySyncJobService.this).sendPreviousDayOnce();
                         ExportManager exportManager = new ExportManager(DailySyncJobService.this);
                         exportManager.prepareDatabaseExport();
                         exportManager.prepareLogArchiveExport();
