@@ -8,13 +8,18 @@ import android.database.sqlite.SQLiteOpenHelper;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import zonely.ams.adcore.config.AppConstants;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.model.Credentials;
+import zonely.ams.adcore.model.DeviceDataDelta;
 import zonely.ams.adcore.model.LoginResult;
 import zonely.ams.adcore.model.NodeItem;
 import zonely.ams.adcore.model.ResourceItem;
@@ -118,6 +123,7 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE sent_error_logs (" +
                 "signature TEXT PRIMARY KEY," +
                 "sent_at INTEGER NOT NULL)");
+        createDeviceDataSendStateTables(db);
         insertDefaultConfig(db);
         AdcoreLogger.i(TAG, "Database created with version=" + AppConstants.DB_VERSION);
     }
@@ -127,6 +133,7 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         super.onOpen(db);
         if (!db.isReadOnly()) {
             createAuthSessionTable(db);
+            createDeviceDataSendStateTables(db);
             ensureAuthSessionColumns(db);
             migrateAndRemoveLegacyCredentialsTable(db);
             insertDefaultConfig(db);
@@ -147,6 +154,8 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         db.execSQL("DROP TABLE IF EXISTS markers");
         db.execSQL("DROP TABLE IF EXISTS uptime_sessions");
         db.execSQL("DROP TABLE IF EXISTS sent_error_logs");
+        db.execSQL("DROP TABLE IF EXISTS playback_send_state");
+        db.execSQL("DROP TABLE IF EXISTS device_data_daily_send_state");
         onCreate(db);
     }
 
@@ -579,8 +588,193 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         getWritableDatabase().insertWithOnConflict("sent_error_logs", null, values, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
+    public synchronized List<DeviceDataDelta> getPendingDeviceDataDeltas(long now) {
+        List<DeviceDataDelta> deltas = new ArrayList<>();
+        for (String dateKey : getDeviceDataDateKeys(now)) {
+            DeviceDataDelta delta = buildDeviceDataDelta(dateKey, now);
+            if (delta != null && delta.hasData()) {
+                deltas.add(delta);
+            }
+        }
+        return deltas;
+    }
+
+    public synchronized void markDeviceDataDeltaUploaded(DeviceDataDelta delta) {
+        if (delta == null) {
+            return;
+        }
+        SQLiteDatabase db = getWritableDatabase();
+        long now = TimeUtils.now();
+        db.beginTransaction();
+        try {
+            for (Map.Entry<String, DeviceDataDelta.PlaybackSnapshot> entry : delta.playbackSnapshots.entrySet()) {
+                DeviceDataDelta.PlaybackSnapshot snapshot = entry.getValue();
+                ContentValues values = new ContentValues();
+                values.put("play_date", delta.dateKey);
+                values.put("resource_id", entry.getKey());
+                values.put("sent_play_count", snapshot.playCount);
+                values.put("sent_play_seconds", snapshot.totalPlaySeconds);
+                values.put("updated_at", now);
+                db.insertWithOnConflict("playback_send_state", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+            }
+
+            ContentValues daily = new ContentValues();
+            daily.put("date_key", delta.dateKey);
+            daily.put("sent_sync_seconds", delta.currentTotalSyncTimeInSec);
+            daily.put("sent_app_uptime_seconds", delta.currentTotalAppUpTimeInSec);
+            daily.put("sent_device_uptime_seconds", delta.currentTotalDeviceUpTimeInSec);
+            daily.put("covered_until_ms", delta.windowEndMs);
+            daily.put("sent_at", now);
+            daily.put("updated_at", now);
+            db.insertWithOnConflict("device_data_daily_send_state", null, daily, SQLiteDatabase.CONFLICT_REPLACE);
+            db.setTransactionSuccessful();
+            AdcoreLogger.i(TAG, "Device data delta marked uploaded. date=" + delta.dateKey
+                    + " windowEnd=" + delta.windowEndMs
+                    + " resourceCount=" + delta.resourceIdPlayCountMap.size());
+        } finally {
+            db.endTransaction();
+        }
+    }
+
     public File databaseFile() {
         return appContext.getDatabasePath(AppConstants.DB_NAME);
+    }
+
+    private List<String> getDeviceDataDateKeys(long now) {
+        Set<String> keys = new LinkedHashSet<>();
+        Cursor playback = getReadableDatabase().query("playback_counts",
+                new String[]{"DISTINCT play_date"}, null, null, null, null, "play_date ASC");
+        try {
+            while (playback.moveToNext()) {
+                keys.add(playback.getString(0));
+            }
+        } finally {
+            playback.close();
+        }
+
+        Cursor sync = getReadableDatabase().query("sync_runs",
+                new String[]{"completed_at"},
+                "success = 1 AND completed_at IS NOT NULL",
+                null, null, null, "completed_at ASC");
+        try {
+            while (sync.moveToNext()) {
+                keys.add(TimeUtils.isoLocalDateFromMillis(sync.getLong(0)));
+            }
+        } finally {
+            sync.close();
+        }
+
+        Cursor uptime = getReadableDatabase().query("uptime_sessions",
+                new String[]{"started_at", "ended_at"},
+                null, null, null, null, "started_at ASC");
+        try {
+            while (uptime.moveToNext()) {
+                long start = uptime.getLong(0);
+                long end = uptime.isNull(1) ? now : uptime.getLong(1);
+                keys.addAll(TimeUtils.dateKeysBetween(start, end));
+            }
+        } finally {
+            uptime.close();
+        }
+
+        keys.add(TimeUtils.todayKey());
+        List<String> sorted = new ArrayList<>(keys);
+        Collections.sort(sorted);
+        return sorted;
+    }
+
+    private DeviceDataDelta buildDeviceDataDelta(String dateKey, long now) {
+        long dayStart = TimeUtils.startOfLocalDay(dateKey);
+        long dayEnd = TimeUtils.endOfLocalDayExclusive(dateKey) - 1L;
+        long windowEnd = Math.min(dayEnd, now);
+        if (windowEnd < dayStart) {
+            return null;
+        }
+
+        DailySendState sendState = getDailySendState(dateKey);
+        long windowStart = sendState.coveredUntilMs > 0L
+                ? Math.min(windowEnd, sendState.coveredUntilMs + 1L)
+                : dayStart;
+
+        Map<String, DeviceDataDelta.PlaybackSnapshot> currentPlayback = getPlaybackSnapshots(dateKey, false);
+        Map<String, DeviceDataDelta.PlaybackSnapshot> sentPlayback = getPlaybackSnapshots(dateKey, true);
+        Map<String, Integer> playbackDeltas = new LinkedHashMap<>();
+        Map<String, DeviceDataDelta.PlaybackSnapshot> playbackSnapshots = new LinkedHashMap<>();
+        long playSecondsDelta = 0L;
+        for (Map.Entry<String, DeviceDataDelta.PlaybackSnapshot> entry : currentPlayback.entrySet()) {
+            DeviceDataDelta.PlaybackSnapshot current = entry.getValue();
+            DeviceDataDelta.PlaybackSnapshot sent = sentPlayback.get(entry.getKey());
+            int sentCount = sent == null ? 0 : sent.playCount;
+            int sentSeconds = sent == null ? 0 : sent.totalPlaySeconds;
+            int countDelta = Math.max(0, current.playCount - sentCount);
+            int secondsDelta = Math.max(0, current.totalPlaySeconds - sentSeconds);
+            if (countDelta > 0) {
+                playbackDeltas.put(entry.getKey(), countDelta);
+            }
+            if (countDelta > 0 || secondsDelta > 0) {
+                playbackSnapshots.put(entry.getKey(), current);
+                playSecondsDelta += secondsDelta;
+            }
+        }
+
+        int currentSyncSeconds = safeInt(getTotalSuccessfulSyncSeconds(dateKey));
+        int currentAppUptimeSeconds = safeInt(getTotalUptimeSeconds("APP", dateKey));
+        int currentDeviceUptimeSeconds = safeInt(getTotalUptimeSeconds("DEVICE", dateKey));
+
+        return new DeviceDataDelta(
+                dateKey,
+                windowStart,
+                windowEnd,
+                safeInt(playSecondsDelta),
+                Math.max(0, currentSyncSeconds - sendState.sentSyncSeconds),
+                Math.max(0, currentAppUptimeSeconds - sendState.sentAppUptimeSeconds),
+                Math.max(0, currentDeviceUptimeSeconds - sendState.sentDeviceUptimeSeconds),
+                currentSyncSeconds,
+                currentAppUptimeSeconds,
+                currentDeviceUptimeSeconds,
+                playbackDeltas,
+                playbackSnapshots);
+    }
+
+    private Map<String, DeviceDataDelta.PlaybackSnapshot> getPlaybackSnapshots(String dateKey, boolean sentState) {
+        Map<String, DeviceDataDelta.PlaybackSnapshot> map = new LinkedHashMap<>();
+        Cursor cursor;
+        if (sentState) {
+            cursor = getReadableDatabase().query("playback_send_state",
+                    new String[]{"resource_id", "sent_play_count", "sent_play_seconds"},
+                    "play_date = ?", new String[]{dateKey}, null, null, "resource_id ASC");
+        } else {
+            cursor = getReadableDatabase().query("playback_counts",
+                    new String[]{"resource_id", "play_count", "total_play_seconds"},
+                    "play_date = ?", new String[]{dateKey}, null, null, "resource_id ASC");
+        }
+        try {
+            while (cursor.moveToNext()) {
+                map.put(cursor.getString(0), new DeviceDataDelta.PlaybackSnapshot(cursor.getInt(1), cursor.getInt(2)));
+            }
+        } finally {
+            cursor.close();
+        }
+        return map;
+    }
+
+    private DailySendState getDailySendState(String dateKey) {
+        Cursor cursor = getReadableDatabase().query("device_data_daily_send_state",
+                new String[]{"sent_sync_seconds", "sent_app_uptime_seconds", "sent_device_uptime_seconds", "covered_until_ms"},
+                "date_key = ?", new String[]{dateKey}, null, null, null);
+        try {
+            if (!cursor.moveToFirst()) {
+                return new DailySendState();
+            }
+            DailySendState state = new DailySendState();
+            state.sentSyncSeconds = cursor.getInt(0);
+            state.sentAppUptimeSeconds = cursor.getInt(1);
+            state.sentDeviceUptimeSeconds = cursor.getInt(2);
+            state.coveredUntilMs = cursor.isNull(3) ? 0L : cursor.getLong(3);
+            return state;
+        } finally {
+            cursor.close();
+        }
     }
 
     private void upsertResourceLocked(SQLiteDatabase db, ResourceItem resource) {
@@ -618,6 +812,13 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         } finally {
             cursor.close();
         }
+    }
+
+    private int safeInt(long value) {
+        if (value <= 0L) {
+            return 0;
+        }
+        return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
     }
 
     private String getMarkerLike(String table, String keyColumn, String valueColumn, String key) {
@@ -672,6 +873,24 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
                 "roles TEXT," +
                 "credential_updated_at INTEGER," +
                 "credential_recovery_blocked INTEGER NOT NULL DEFAULT 0," +
+                "updated_at INTEGER NOT NULL)");
+    }
+
+    private void createDeviceDataSendStateTables(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS playback_send_state (" +
+                "play_date TEXT NOT NULL," +
+                "resource_id TEXT NOT NULL," +
+                "sent_play_count INTEGER NOT NULL DEFAULT 0," +
+                "sent_play_seconds INTEGER NOT NULL DEFAULT 0," +
+                "updated_at INTEGER NOT NULL," +
+                "PRIMARY KEY(play_date, resource_id))");
+        db.execSQL("CREATE TABLE IF NOT EXISTS device_data_daily_send_state (" +
+                "date_key TEXT PRIMARY KEY," +
+                "sent_sync_seconds INTEGER NOT NULL DEFAULT 0," +
+                "sent_app_uptime_seconds INTEGER NOT NULL DEFAULT 0," +
+                "sent_device_uptime_seconds INTEGER NOT NULL DEFAULT 0," +
+                "covered_until_ms INTEGER NOT NULL DEFAULT 0," +
+                "sent_at INTEGER," +
                 "updated_at INTEGER NOT NULL)");
     }
 
@@ -772,5 +991,12 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         values.put("config_key", key);
         values.put("config_value", value);
         db.insertWithOnConflict("config", null, values, SQLiteDatabase.CONFLICT_IGNORE);
+    }
+
+    private static final class DailySendState {
+        int sentSyncSeconds;
+        int sentAppUptimeSeconds;
+        int sentDeviceUptimeSeconds;
+        long coveredUntilMs;
     }
 }

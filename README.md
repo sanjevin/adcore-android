@@ -101,7 +101,15 @@ At the configured time:
 
 ### Audit And Device Data
 
-Previous-day audit payloads are sent with `sendDeviceData`. The request body contains `deviceId`; the endpoint is `POST /deviceManagement/saveDeviceData/{deviceId}`.
+Device data is uploaded independently from resource sync by `DeviceDataUploadJobService`.
+
+- Upload interval is controlled by `AppConstants.DEVICE_DATA_UPLOAD_INTERVAL_MINUTES`; default is `60`. Change this constant to `10` for local testing if needed.
+- Each run sends pending data up to the current time, not only yesterday's data.
+- Payloads are deltas since the last successful upload for that date/resource.
+- Local send state is stored only after `sendDeviceData` succeeds, so failed uploads are retried by the next run.
+- Playback counts are tracked per `play_date + resource_id` in `playback_counts`, while successfully uploaded counters are tracked in `playback_send_state`.
+- Daily sync/app/device uptime upload state is tracked in `device_data_daily_send_state`.
+- The request body contains `deviceId`; the endpoint is `POST /deviceManagement/saveDeviceData/{deviceId}`.
 
 ### Authentication
 
@@ -187,6 +195,8 @@ All authenticated calls attach the current `Authorization: Bearer <accessToken>`
 - `markers`
 - `uptime_sessions`
 - `sent_error_logs`
+- `playback_send_state`
+- `device_data_daily_send_state`
 
 Default configurable values:
 
@@ -196,6 +206,7 @@ Default configurable values:
 - `background_retry_max = 3`
 - `download_threads = 4`
 - `daily_sync_time = 00:30`
+- `DEVICE_DATA_UPLOAD_INTERVAL_MINUTES = 60` in `AppConstants`
 
 ## App-Private Storage
 
@@ -248,7 +259,7 @@ app/build/outputs/apk/debug/app-debug.apk
 Completed in this workspace:
 
 - `git diff --check`
-- `./gradlew assembleDebug testDebugUnitTest --no-daemon`
+- `./gradlew assembleDebug assembleRelease testDebugUnitTest --no-daemon`
 
 ## Future Release Hooks
 

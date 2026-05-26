@@ -7,6 +7,8 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class TimeUtils {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ISO_LOCAL_DATE;
@@ -76,6 +78,23 @@ public final class TimeUtils {
                 .atZone(ZoneId.systemDefault())
                 .toLocalDate()
                 .format(DATE_FORMAT);
+    }
+
+    public static List<String> dateKeysBetween(long startMillis, long endMillis) {
+        List<String> keys = new ArrayList<>();
+        long safeEnd = Math.max(startMillis, endMillis);
+        LocalDate start = Instant.ofEpochMilli(startMillis)
+                .atZone(ZoneId.systemDefault())
+                .toLocalDate();
+        LocalDate end = Instant.ofEpochMilli(safeEnd)
+                .atZone(ZoneId.systemDefault())
+                .toLocalDate();
+        LocalDate current = start;
+        while (!current.isAfter(end)) {
+            keys.add(current.format(DATE_FORMAT));
+            current = current.plusDays(1);
+        }
+        return keys;
     }
 
     public static String isoUtcNow() {

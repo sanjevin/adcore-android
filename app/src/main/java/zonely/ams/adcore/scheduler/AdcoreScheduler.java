@@ -14,6 +14,7 @@ import zonely.ams.adcore.data.AdcoreDatabase;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.service.AppUpdateJobService;
 import zonely.ams.adcore.service.DailySyncJobService;
+import zonely.ams.adcore.service.DeviceDataUploadJobService;
 import zonely.ams.adcore.service.HourlyLogScanJobService;
 import zonely.ams.adcore.util.TimeUtils;
 
@@ -22,6 +23,7 @@ public final class AdcoreScheduler {
     public static final int JOB_HOURLY_LOG_SCAN = 1002;
     public static final int JOB_APP_UPDATE = 1003;
     public static final int JOB_APP_UPDATE_NOW = 1004;
+    public static final int JOB_DEVICE_DATA_UPLOAD = 1005;
     private static final String TAG = "AdcoreScheduler";
 
     private AdcoreScheduler() {
@@ -31,6 +33,7 @@ public final class AdcoreScheduler {
         scheduleDailySyncAlarm(context);
         scheduleHourlyLogScan(context);
         scheduleDailyAppUpdate(context);
+        scheduleNextDeviceDataUpload(context);
     }
 
     public static void scheduleDailySyncAlarm(Context context) {
@@ -127,6 +130,28 @@ public final class AdcoreScheduler {
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setMinimumLatency(0L)
                 .setOverrideDeadline(1000L)
+                .build();
+        schedule(context, jobInfo);
+    }
+
+    public static void scheduleNextDeviceDataUpload(Context context) {
+        scheduleDeviceDataUploadAfter(context, AppConstants.DEVICE_DATA_UPLOAD_INTERVAL_MS);
+    }
+
+    public static void scheduleImmediateDeviceDataUpload(Context context) {
+        scheduleDeviceDataUploadAfter(context, 0L);
+    }
+
+    private static void scheduleDeviceDataUploadAfter(Context context, long delayMs) {
+        long safeDelay = Math.max(0L, delayMs);
+        long deadline = safeDelay == 0L ? 1000L : safeDelay + 5L * 60L * 1000L;
+        JobInfo jobInfo = new JobInfo.Builder(JOB_DEVICE_DATA_UPLOAD,
+                new ComponentName(context, DeviceDataUploadJobService.class))
+                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                .setMinimumLatency(safeDelay)
+                .setOverrideDeadline(deadline)
+                .setBackoffCriteria(5L * 60L * 1000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
+                .setPersisted(true)
                 .build();
         schedule(context, jobInfo);
     }

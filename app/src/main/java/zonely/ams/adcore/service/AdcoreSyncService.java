@@ -7,7 +7,6 @@ import android.os.IBinder;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import zonely.ams.adcore.export.AuditManager;
 import zonely.ams.adcore.export.ExportManager;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.sync.SyncManager;
@@ -82,7 +81,6 @@ public class AdcoreSyncService extends Service {
     }
 
     private void afterSuccessfulSync() {
-        new AuditManager(this).sendPreviousDayOnce();
         try {
             ExportManager exportManager = new ExportManager(this);
             exportManager.prepareDatabaseExport();
