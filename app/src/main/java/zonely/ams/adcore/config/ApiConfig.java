@@ -2,9 +2,10 @@ package zonely.ams.adcore.config;
 
 public final class ApiConfig {
 
-//    public static final String BASE_URL = "http://192.168.1.15:8081/adcore/api";
+    public static final String BASE_URL = "http://10.0.2.2:8081/adcore/api";
+//    public static final String BASE_URL = "http://192.168.1.8:8081/adcore/api";
 //    public static final String BASE_URL = "https://api-test.adcorezonely.dpdns.org/adcore/api";
-    public static final String BASE_URL = "https://api.adcorezonely.dpdns.org/adcore/api";
+//    public static final String BASE_URL = "https://api.adcorezonely.dpdns.org/adcore/api";
     public static final String LOGIN_URL = BASE_URL + "/v1/auth/login";
     public static final String REFRESH_URL = BASE_URL + "/v1/auth/refresh";
     public static final String LOGOUT_URL = BASE_URL + "/v1/auth/logout";
