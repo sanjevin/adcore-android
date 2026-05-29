@@ -15,7 +15,7 @@ public final class AppConstants {
     public static final int MAX_LOG_FILES = 10;
     public static final long DEFAULT_ACCESS_TOKEN_TTL_MS = 60L * 60L * 1000L;
     public static final long ACCESS_TOKEN_REFRESH_MARGIN_MS = 5L * 60L * 1000L;
-    public static final long DEVICE_DATA_UPLOAD_INTERVAL_MINUTES = 10L;
+    public static final long DEVICE_DATA_UPLOAD_INTERVAL_MINUTES = 180L;
     public static final long DEVICE_DATA_UPLOAD_INTERVAL_MS = DEVICE_DATA_UPLOAD_INTERVAL_MINUTES * 60L * 1000L;
 
     public static final String MARKER_LAST_DAILY_SYNC_SUCCESS = "last_daily_sync_success_at";
