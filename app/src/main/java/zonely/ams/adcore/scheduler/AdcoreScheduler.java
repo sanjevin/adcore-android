@@ -30,21 +30,29 @@ public final class AdcoreScheduler {
     }
 
     public static void scheduleAll(Context context) {
-        scheduleDailySyncAlarm(context);
+        scheduleResourceSyncAlarm(context);
         scheduleHourlyLogScan(context);
         scheduleDailyAppUpdate(context);
         scheduleNextDeviceDataUpload(context);
     }
 
-    public static void scheduleDailySyncAlarm(Context context) {
+    public static void scheduleResourceSyncAlarm(Context context) {
         Context appContext = context.getApplicationContext();
-        DailySyncTime syncTime = dailySyncTime(appContext);
-        long triggerAt = TimeUtils.nextLocalTime(syncTime.hour, syncTime.minute);
+        scheduleResourceSyncAlarmAt(appContext, nextResourceSyncTriggerAt(appContext), "last-success");
+    }
+
+    public static void scheduleNextResourceSyncAlarm(Context context) {
+        Context appContext = context.getApplicationContext();
+        long triggerAt = TimeUtils.now() + resourceSyncIntervalMs(appContext);
+        scheduleResourceSyncAlarmAt(appContext, triggerAt, "interval");
+    }
+
+    private static void scheduleResourceSyncAlarmAt(Context appContext, long triggerAt, String reason) {
         Intent intent = new Intent(appContext, DailySyncAlarmReceiver.class);
         PendingIntent pendingIntent = PendingIntent.getBroadcast(appContext, 3001, intent, pendingFlags());
         AlarmManager alarmManager = (AlarmManager) appContext.getSystemService(Context.ALARM_SERVICE);
         if (alarmManager == null) {
-            AdcoreLogger.e(TAG, "AlarmManager unavailable; daily sync alarm not scheduled.");
+            AdcoreLogger.e(TAG, "AlarmManager unavailable; resource metadata sync alarm not scheduled.");
             return;
         }
         try {
@@ -53,52 +61,66 @@ public final class AdcoreScheduler {
             } else {
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent);
             }
-            AdcoreLogger.i(TAG, "Daily sync exact alarm scheduled for " + TimeUtils.isoUtc(triggerAt)
-                    + " localTime=" + syncTime.label);
+            AdcoreLogger.i(TAG, "Resource metadata sync exact alarm scheduled for " + TimeUtils.isoUtc(triggerAt)
+                    + " interval=" + resourceSyncIntervalLabel(appContext)
+                    + " reason=" + reason);
         } catch (SecurityException exception) {
-            AdcoreLogger.w(TAG, "Exact alarm permission unavailable; falling back to inexact daily sync alarm.", exception);
+            AdcoreLogger.w(TAG, "Exact alarm permission unavailable; falling back to inexact resource sync alarm.",
+                    exception);
             alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent);
         }
     }
 
-    public static void scheduleImmediateDailySync(Context context) {
+    public static void scheduleImmediateResourceSync(Context context) {
         JobInfo jobInfo = new JobInfo.Builder(JOB_DAILY_SYNC,
-                new ComponentName(context, DailySyncJobService.class))
+                new ComponentName(context.getApplicationContext(), DailySyncJobService.class))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setMinimumLatency(0L)
                 .setOverrideDeadline(1000L)
                 .setBackoffCriteria(5 * 60 * 1000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
+                .setPersisted(true)
                 .build();
         schedule(context, jobInfo);
     }
 
-    public static void ensureMissedDailySync(Context context) {
-        if (isDailySyncDue(context)) {
-            AdcoreLogger.i(TAG, "Missed " + dailySyncTimeLabel(context)
-                    + " daily sync detected. Scheduling immediate daily sync.");
-            scheduleImmediateDailySync(context);
+    public static void ensureMissedResourceSync(Context context) {
+        if (isResourceSyncDue(context)) {
+            AdcoreLogger.i(TAG, "Resource metadata sync is due. Scheduling immediate background sync. interval="
+                    + resourceSyncIntervalLabel(context));
+            scheduleImmediateResourceSync(context);
         }
     }
 
-    public static boolean isDailySyncDue(Context context) {
-        AdcoreDatabase db = AdcoreDatabase.getInstance(context);
-        DailySyncTime syncTime = dailySyncTime(context);
-        long todaySyncAt = TimeUtils.todayAtLocalTime(syncTime.hour, syncTime.minute);
+    public static boolean isResourceSyncDue(Context context) {
+        long lastSuccess = lastResourceSyncSuccessAt(context);
+        if (lastSuccess <= 0L) {
+            return true;
+        }
+        return TimeUtils.now() >= lastSuccess + resourceSyncIntervalMs(context);
+    }
+
+    public static String resourceSyncIntervalLabel(Context context) {
+        return resourceSyncIntervalMinutes(context) + " minutes";
+    }
+
+    private static long nextResourceSyncTriggerAt(Context context) {
         long now = TimeUtils.now();
-        String lastValue = db.getMarker(AppConstants.MARKER_LAST_DAILY_SYNC_SUCCESS);
-        long lastSuccess = 0L;
-        if (lastValue != null) {
-            try {
-                lastSuccess = Long.parseLong(lastValue);
-            } catch (NumberFormatException ignored) {
-                lastSuccess = 0L;
-            }
+        long intervalMs = resourceSyncIntervalMs(context);
+        long lastSuccess = lastResourceSyncSuccessAt(context);
+        if (lastSuccess <= 0L) {
+            return now + intervalMs;
         }
-        return now > todaySyncAt && lastSuccess < todaySyncAt;
+        long dueAt = lastSuccess + intervalMs;
+        return dueAt <= now ? now + 1000L : dueAt;
     }
 
-    public static String dailySyncTimeLabel(Context context) {
-        return dailySyncTime(context).label;
+    private static long lastResourceSyncSuccessAt(Context context) {
+        AdcoreDatabase db = AdcoreDatabase.getInstance(context);
+        long lastSuccess = parseLong(db.getMarker(AppConstants.MARKER_LAST_RESOURCE_SYNC_SUCCESS));
+        if (lastSuccess <= 0L) {
+            lastSuccess = parseLong(db.getMarker(AppConstants.MARKER_LAST_DAILY_SYNC_SUCCESS));
+        }
+        return lastSuccess;
     }
 
     public static void scheduleHourlyLogScan(Context context) {
@@ -135,7 +157,7 @@ public final class AdcoreScheduler {
     }
 
     public static void scheduleNextDeviceDataUpload(Context context) {
-        scheduleDeviceDataUploadAfter(context, AppConstants.DEVICE_DATA_UPLOAD_INTERVAL_MS);
+        scheduleDeviceDataUploadAfter(context, deviceDataUploadIntervalMs(context));
     }
 
     public static void scheduleImmediateDeviceDataUpload(Context context) {
@@ -174,37 +196,47 @@ public final class AdcoreScheduler {
         return flags;
     }
 
-    private static DailySyncTime dailySyncTime(Context context) {
-        String value = AdcoreDatabase.getInstance(context).getConfigString(
-                AppConstants.CONFIG_DAILY_SYNC_TIME,
-                AppConstants.DEFAULT_DAILY_SYNC_TIME);
-        String[] parts = value.split(":", -1);
-        try {
-            if (parts.length != 2) {
-                throw new IllegalArgumentException("Expected HH:mm");
-            }
-            int hour = Integer.parseInt(parts[0]);
-            int minute = Integer.parseInt(parts[1]);
-            if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-                throw new IllegalArgumentException("Time out of range");
-            }
-            return new DailySyncTime(hour, minute);
-        } catch (Exception exception) {
-            AdcoreLogger.w(TAG, "Invalid daily sync time config: " + value
-                    + ". Falling back to " + AppConstants.DEFAULT_DAILY_SYNC_TIME, exception);
-            return new DailySyncTime(0, 30);
-        }
+    private static long resourceSyncIntervalMs(Context context) {
+        return resourceSyncIntervalMinutes(context) * 60L * 1000L;
     }
 
-    private static final class DailySyncTime {
-        final int hour;
-        final int minute;
-        final String label;
+    private static long deviceDataUploadIntervalMs(Context context) {
+        return deviceDataUploadIntervalMinutes(context) * 60L * 1000L;
+    }
 
-        DailySyncTime(int hour, int minute) {
-            this.hour = hour;
-            this.minute = minute;
-            this.label = TimeUtils.formatLocalTime(hour, minute);
+    private static int resourceSyncIntervalMinutes(Context context) {
+        int value = AdcoreDatabase.getInstance(context).getConfigInt(
+                AppConstants.CONFIG_RESOURCE_SYNC_INTERVAL_MINUTES,
+                AppConstants.DEFAULT_RESOURCE_SYNC_INTERVAL_MINUTES);
+        if (value <= 0) {
+            AdcoreLogger.w(TAG, "Invalid resource sync interval config: " + value
+                    + ". Falling back to " + AppConstants.DEFAULT_RESOURCE_SYNC_INTERVAL_MINUTES + " minutes.");
+            return AppConstants.DEFAULT_RESOURCE_SYNC_INTERVAL_MINUTES;
+        }
+        return value;
+    }
+
+    private static int deviceDataUploadIntervalMinutes(Context context) {
+        int value = AdcoreDatabase.getInstance(context).getConfigInt(
+                AppConstants.CONFIG_DEVICE_DATA_UPLOAD_INTERVAL_MINUTES,
+                AppConstants.DEFAULT_DEVICE_DATA_UPLOAD_INTERVAL_MINUTES);
+        if (value <= 0) {
+            AdcoreLogger.w(TAG, "Invalid device data upload interval config: " + value
+                    + ". Falling back to " + AppConstants.DEFAULT_DEVICE_DATA_UPLOAD_INTERVAL_MINUTES + " minutes.");
+            return AppConstants.DEFAULT_DEVICE_DATA_UPLOAD_INTERVAL_MINUTES;
+        }
+        return value;
+    }
+
+    private static long parseLong(String value) {
+        if (value == null) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException exception) {
+            AdcoreLogger.w(TAG, "Invalid resource sync marker value: " + value, exception);
+            return 0L;
         }
     }
 }

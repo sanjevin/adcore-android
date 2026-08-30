@@ -62,6 +62,10 @@ public class LogUploadManager {
                 return;
             } catch (Exception exception) {
                 last = exception;
+                if (ApiClient.isConnectivityFailure(exception)) {
+                    AdcoreLogger.i(TAG, "Error log upload skipped because internet/server is unavailable.");
+                    return;
+                }
                 AdcoreLogger.w(TAG, "Error log upload attempt failed. attempt=" + (attempt + 1), exception);
                 if (attempt < retry.maxRetries) {
                     sleep(retry.delaySeconds);

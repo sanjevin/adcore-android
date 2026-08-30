@@ -11,6 +11,8 @@ import zonely.ams.adcore.model.Credentials;
 import zonely.ams.adcore.model.LoginResult;
 import zonely.ams.adcore.scheduler.AdcoreScheduler;
 import zonely.ams.adcore.util.AppExecutors;
+import zonely.ams.adcore.util.NetworkUtils;
+import zonely.ams.adcore.util.TimeUtils;
 
 public final class SessionManager {
     public static final int IDLE = 0;
@@ -55,12 +57,23 @@ public final class SessionManager {
                     finishStartup(NO_SESSION, "No saved session found");
                     return;
                 }
+                boolean hasCache = db.hasCachedVideos();
+                if (!NetworkUtils.hasActiveNetwork(context)) {
+                    finishStartupWithLocalFallback(context, db, stored, credentials, hasCache,
+                            AuthPolicy.INTERNET_UNAVAILABLE_MESSAGE);
+                    return;
+                }
                 try {
                     AdcoreLogger.i(TAG, "Saved session found; validating token before startup.");
                     new ApiClient(context).ensureAuthenticatedSession();
                     AdcoreScheduler.scheduleImmediateAppUpdate(context);
                     finishStartup(SUCCESS, "Saved session ready");
                 } catch (ApiException exception) {
+                    if (ApiClient.isConnectivityFailure(exception)) {
+                        finishStartupWithLocalFallback(context, db, stored, credentials, hasCache,
+                                connectivityMessage(exception));
+                        return;
+                    }
                     finishStartup(FAILED, startupFailureMessage(exception));
                 } catch (Exception exception) {
                     AdcoreLogger.e(TAG, "Unexpected session validation failure.", exception);
@@ -71,12 +84,29 @@ public final class SessionManager {
     }
 
     public static LoginResult loginAndPersist(Context context, String username, String password) {
+        AdcoreDatabase db = AdcoreDatabase.getInstance(context);
+        boolean hasCache = db.hasCachedVideos();
+        if (!NetworkUtils.hasActiveNetwork(context)) {
+            if (!hasCache) {
+                return LoginResult.popupFailure(AuthPolicy.INTERNET_UNAVAILABLE_MESSAGE);
+            }
+            return loginWithStoredCredentials(context, db, username, password,
+                    AuthPolicy.INTERNET_UNAVAILABLE_MESSAGE);
+        }
         try {
             LoginResult result = new ApiClient(context).login(username, password);
-            AdcoreDatabase.getInstance(context).saveSession(result, username, password);
+            db.saveSession(result, username, password);
+            db.markSuccessfulServerAuth("login");
             AdcoreContext.setLoginResult(result);
             return result;
         } catch (ApiException exception) {
+            if (ApiClient.isConnectivityFailure(exception)) {
+                String message = connectivityMessage(exception);
+                if (!hasCache) {
+                    return LoginResult.popupFailure(message);
+                }
+                return loginWithStoredCredentials(context, db, username, password, message);
+            }
             if (isAccountLocked(exception)) {
                 AdcoreLogger.w(TAG, "Login rejected because account is locked. username=" + username);
                 return LoginResult.locked(AuthPolicy.LOCKED_ACCOUNT_MESSAGE);
@@ -150,6 +180,82 @@ public final class SessionManager {
             LOCK.notifyAll();
         }
         AdcoreLogger.i(TAG, "Startup login state=" + state + " message=" + message);
+    }
+
+    private static void finishStartupWithLocalFallback(Context context, AdcoreDatabase db, LoginResult stored,
+                                                       Credentials credentials, boolean hasCache, String message) {
+        if (hasCache && credentials != null && credentials.isValid() && isWithinLocalLoginGrace(db)) {
+            LoginResult local = stored == null ? LoginResult.localSuccess("Local login ready") : stored;
+            local.success = true;
+            local.localLogin = true;
+            local.message = "Local login ready";
+            AdcoreContext.setLoginResult(local);
+            finishStartup(SUCCESS, "Local login ready");
+            AdcoreLogger.i(TAG, "Startup allowed using local login fallback. reason=" + message);
+            return;
+        }
+        if (hasCache && credentials != null && credentials.isValid() && hasLocalLoginGraceExpired(db)) {
+            clearSession(context);
+            AdcoreLogger.w(TAG, "Startup local login grace expired; session cleared. reason=" + message);
+        } else {
+            AdcoreContext.clear();
+        }
+        finishStartup(FAILED, message);
+    }
+
+    private static LoginResult loginWithStoredCredentials(Context context, AdcoreDatabase db, String username,
+                                                         String password, String connectivityMessage) {
+        Credentials stored = db.getStoredCredentials();
+        if (stored == null || !stored.isValid()) {
+            AdcoreLogger.w(TAG, "Local login unavailable because stored credentials are missing.");
+            return LoginResult.popupFailure(connectivityMessage);
+        }
+        if (!stored.username.equals(username) || !stored.password.equals(password)) {
+            AdcoreLogger.w(TAG, "Local login rejected because entered credentials do not match stored credentials.");
+            return LoginResult.failure("Local username or password is incorrect.");
+        }
+        if (!isWithinLocalLoginGrace(db)) {
+            if (hasLocalLoginGraceExpired(db)) {
+                clearSession(context);
+                AdcoreLogger.w(TAG, "Local login grace expired; session cleared.");
+            }
+            return LoginResult.popupFailure(connectivityMessage);
+        }
+        LoginResult local = db.getStoredSession();
+        if (local == null) {
+            local = LoginResult.localSuccess("Local login successful");
+            local.username = stored.username;
+        }
+        local.success = true;
+        local.localLogin = true;
+        local.message = "Local login successful";
+        AdcoreContext.setLoginResult(local);
+        AdcoreLogger.i(TAG, "Local login successful. reason=" + connectivityMessage);
+        return local;
+    }
+
+    private static boolean isWithinLocalLoginGrace(AdcoreDatabase db) {
+        long lastServerAuth = db.getLastSuccessfulServerAuthAt();
+        if (lastServerAuth <= 0L) {
+            return false;
+        }
+        return TimeUtils.now() <= lastServerAuth + localLoginGraceMs(db);
+    }
+
+    private static boolean hasLocalLoginGraceExpired(AdcoreDatabase db) {
+        long lastServerAuth = db.getLastSuccessfulServerAuthAt();
+        return lastServerAuth > 0L && TimeUtils.now() > lastServerAuth + localLoginGraceMs(db);
+    }
+
+    private static long localLoginGraceMs(AdcoreDatabase db) {
+        return db.getLocalLoginGraceDays() * 24L * 60L * 60L * 1000L;
+    }
+
+    private static String connectivityMessage(ApiException exception) {
+        if (ApiClient.isNetworkUnavailable(exception)) {
+            return AuthPolicy.INTERNET_UNAVAILABLE_MESSAGE;
+        }
+        return AuthPolicy.SERVER_NOT_REACHABLE_MESSAGE;
     }
 
     private static boolean isAccountLocked(ApiException exception) {

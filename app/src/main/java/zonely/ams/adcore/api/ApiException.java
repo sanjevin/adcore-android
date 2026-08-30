@@ -1,6 +1,11 @@
 package zonely.ams.adcore.api;
 
 public class ApiException extends Exception {
+    public static final int HTTP_NETWORK_UNAVAILABLE = -100;
+    public static final int HTTP_SERVER_UNREACHABLE = -101;
+    public static final String CODE_NETWORK_UNAVAILABLE = "NETWORK_UNAVAILABLE";
+    public static final String CODE_SERVER_UNREACHABLE = "SERVER_UNREACHABLE";
+
     private final int httpCode;
     private final String apiCode;
 

@@ -30,7 +30,7 @@ import zonely.ams.adcore.util.DeviceIdProvider;
 
 public class SyncActivity extends BaseActivity {
     public static final String EXTRA_SHOW_UNMAPPED_DEVICE = "show_unmapped_device";
-    public static final String EXTRA_FOREGROUND_DAILY_SYNC = "foreground_daily_sync";
+    public static final String EXTRA_FOREGROUND_RESOURCE_SYNC = "foreground_resource_sync";
     private static final String TAG = "SyncActivity";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Map<String, ProgressRow> rows = new LinkedHashMap<>();
@@ -58,20 +58,19 @@ public class SyncActivity extends BaseActivity {
             showUnmappedDeviceScreen();
             return;
         }
-        if (getIntent().getBooleanExtra(EXTRA_FOREGROUND_DAILY_SYNC, false)) {
-            startDailyForegroundSync();
-            return;
-        }
-        if (AdcoreScheduler.isDailySyncDue(this)) {
-            AdcoreLogger.i(TAG, "Missed " + AdcoreScheduler.dailySyncTimeLabel(this)
-                    + " daily pull detected; starting foreground daily sync.");
-            startDailyForegroundSync();
+        if (getIntent().getBooleanExtra(EXTRA_FOREGROUND_RESOURCE_SYNC, false)) {
+            startForegroundResourceSync();
             return;
         }
         boolean hasCache = AdcoreDatabase.getInstance(this).hasCachedVideos();
         if (hasCache) {
-            AdcoreLogger.i(TAG, "Cached videos already exist. Starting AdsActivity while sync continues in background.");
-            AdcoreSyncService.startInitial(this, false);
+            if (AdcoreScheduler.isResourceSyncDue(this)) {
+                AdcoreLogger.i(TAG, "Resource metadata sync is due. Starting background sync while cached ads play.");
+                AdcoreSyncService.startDaily(this, false);
+            } else {
+                AdcoreLogger.i(TAG, "Cached videos already exist. Starting AdsActivity. Next resource sync interval="
+                        + AdcoreScheduler.resourceSyncIntervalLabel(this));
+            }
             goTo(AdsActivity.class, true);
             return;
         }
@@ -123,8 +122,8 @@ public class SyncActivity extends BaseActivity {
         startForegroundSyncWhenIdle(false);
     }
 
-    private void startDailyForegroundSync() {
-        DailySyncCoordinator.clearPending(this);
+    private void startForegroundResourceSync() {
+        DailySyncCoordinator.clearAdsRefreshPending(this);
         rows.clear();
         list.removeAllViews();
         headline.setText(R.string.syncing_resources);

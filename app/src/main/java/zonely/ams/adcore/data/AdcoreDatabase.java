@@ -461,6 +461,36 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         return getMarkerLike("markers", "marker_key", "marker_value", key);
     }
 
+    public synchronized long getLastSuccessfulServerAuthAt() {
+        String value = getMarker(AppConstants.MARKER_LAST_SUCCESSFUL_SERVER_AUTH_AT);
+        if (value == null) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException exception) {
+            AdcoreLogger.w(TAG, "Invalid last successful server auth marker: " + value, exception);
+            return 0L;
+        }
+    }
+
+    public synchronized int getLocalLoginGraceDays() {
+        int days = getConfigInt(AppConstants.CONFIG_GRACE_LOCAL_LOGIN,
+                AppConstants.DEFAULT_GRACE_LOCAL_LOGIN_DAYS);
+        if (days <= 0) {
+            AdcoreLogger.w(TAG, "Invalid local login grace config: " + days
+                    + ". Falling back to " + AppConstants.DEFAULT_GRACE_LOCAL_LOGIN_DAYS + " days.");
+            return AppConstants.DEFAULT_GRACE_LOCAL_LOGIN_DAYS;
+        }
+        return days;
+    }
+
+    public synchronized void markSuccessfulServerAuth(String authType) {
+        long now = TimeUtils.now();
+        setMarker(AppConstants.MARKER_LAST_SUCCESSFUL_SERVER_AUTH_AT, String.valueOf(now));
+        AdcoreLogger.i(TAG, "Successful server auth recorded. type=" + authType + " at=" + TimeUtils.isoUtc(now));
+    }
+
     public synchronized void setMarker(String key, String value) {
         ContentValues values = new ContentValues();
         values.put("marker_key", key);
@@ -856,7 +886,12 @@ public class AdcoreDatabase extends SQLiteOpenHelper {
         putDefault(db, AppConstants.CONFIG_BACKGROUND_RETRY_DELAY_SEC, "300");
         putDefault(db, AppConstants.CONFIG_BACKGROUND_RETRY_MAX, "3");
         putDefault(db, AppConstants.CONFIG_DOWNLOAD_THREADS, "4");
-        putDefault(db, AppConstants.CONFIG_DAILY_SYNC_TIME, AppConstants.DEFAULT_DAILY_SYNC_TIME);
+        putDefault(db, AppConstants.CONFIG_RESOURCE_SYNC_INTERVAL_MINUTES,
+                String.valueOf(AppConstants.DEFAULT_RESOURCE_SYNC_INTERVAL_MINUTES));
+        putDefault(db, AppConstants.CONFIG_DEVICE_DATA_UPLOAD_INTERVAL_MINUTES,
+                String.valueOf(AppConstants.DEFAULT_DEVICE_DATA_UPLOAD_INTERVAL_MINUTES));
+        putDefault(db, AppConstants.CONFIG_GRACE_LOCAL_LOGIN,
+                String.valueOf(AppConstants.DEFAULT_GRACE_LOCAL_LOGIN_DAYS));
     }
 
     private void createAuthSessionTable(SQLiteDatabase db) {

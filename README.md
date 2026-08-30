@@ -87,28 +87,27 @@ Video download failures are logged with full stack trace plus resource metadata:
 - `fileUri`
 - target local file path
 
-Daily sync still compares resources by `id`, updates metadata changes, downloads new/changed videos, and deletes missing resources plus their cached files.
+Scheduled resource sync compares resources by `id`, updates metadata changes, downloads new/changed videos, and deletes missing resources plus their cached files.
 
-The daily sync time is controlled by the SQLite config key `daily_sync_time` in `HH:mm` 24-hour local-device time. The default is `00:30`.
+The scheduled resource sync interval is controlled by the SQLite config key `resource_sync_interval_minutes`. The hardcoded app default is `180` minutes.
 
-At the configured time:
+At each configured interval:
 
-- The app calls `getMappedResources/{deviceId}` and performs the daily resource comparison.
-- If `AdsActivity` is playing a video, it lets the current video finish, persists playback counters, closes playback resources, and then opens `SyncActivity`.
-- `SyncActivity` stays in the foreground and displays sync progress rows/progress bars while the sync worker runs.
-- After sync completes, the app starts a fresh `AdsActivity` and reloads playback from the refreshed cache.
-- If foreground launch fails immediately, the scheduler keeps a background retry fallback.
+- The app calls `getMappedResources/{deviceId}` and performs the resource comparison in the background.
+- If `AdsActivity` is already playing cached videos, playback continues from local cache while the sync job runs.
+- After a successful background sync, `AdsActivity` waits for the current video to complete, persists playback counters, then restarts fresh so playback reloads from the refreshed cache.
+- If no cached videos exist, `SyncActivity` still runs the sync in the foreground and displays progress rows/progress bars.
 
 ### Audit And Device Data
 
 Device data is uploaded independently from resource sync by `DeviceDataUploadJobService`.
 
-- Upload interval is controlled by `AppConstants.DEVICE_DATA_UPLOAD_INTERVAL_MINUTES`; default is `60`. Change this constant to `10` for local testing if needed.
+- Upload interval is controlled by SQLite config key `device_data_upload_interval_minutes`; default is `180`.
 - Each run sends pending data up to the current time, not only yesterday's data.
 - Payloads are deltas since the last successful upload for that date/resource.
 - Local send state is stored only after `sendDeviceData` succeeds, so failed uploads are retried by the next run.
 - Playback counts are tracked per `play_date + resource_id` in `playback_counts`, while successfully uploaded counters are tracked in `playback_send_state`.
-- Daily sync/app/device uptime upload state is tracked in `device_data_daily_send_state`.
+- Per-day sync/app/device uptime upload state is tracked in `device_data_daily_send_state`.
 - The request body contains `deviceId`; the endpoint is `POST /deviceManagement/saveDeviceData/{deviceId}`.
 
 ### Authentication
@@ -121,6 +120,12 @@ The app stores credentials for emergency recovery, but credentials are not used 
 - If refresh succeeds, the rotated refresh token and new access-token expiry are saved immediately.
 - If refresh fails, the app performs one credential-login recovery using the stored username/password, saves the new token pair, and retries the original API.
 - Access-token `401` responses are treated as an exceptional fallback: refresh/recover once and retry the authenticated API once. The app does not loop beyond that single recovery pass.
+- Successful server login, refresh, and credential recovery update marker `last_successful_server_auth_at`.
+- Manual login requires server authentication whenever no cached videos exist. If internet is unavailable, the login screen shows `Internet unavailable`; if the server cannot be reached, it shows `Server not reachable`.
+- When cached videos exist and internet/server is unavailable, manual login may fall back to locally stored username/password only while `last_successful_server_auth_at` is within the configured `grace_local_login` window.
+- `grace_local_login` is stored in SQLite config as days; the hardcoded default is `7`.
+- Offline/local login does not update `last_successful_server_auth_at`. If the grace window has expired, the app clears the local session and requires a fresh server login.
+- Non-auth API calls check for active network before sending. If internet is unavailable or the server is unreachable, foreground and background jobs log the condition, skip retries, and wait for their next normal schedule.
 - If refresh and credential recovery both fail, access/refresh tokens are cleared while credentials are retained for manual recovery; locked or rejected credentials are marked so automatic recovery does not loop.
 - Logout support calls `POST /auth/logout` with `X-Refresh-Token`, then clears local tokens and stored credentials.
 - Login failures containing `locked` or stable code `ACCOUNT_LOCKED` show a clear locked-account message during both startup auto-login and manual login, and are not automatically retried.
@@ -205,8 +210,9 @@ Default configurable values:
 - `background_retry_delay_sec = 300`
 - `background_retry_max = 3`
 - `download_threads = 4`
-- `daily_sync_time = 00:30`
-- `DEVICE_DATA_UPLOAD_INTERVAL_MINUTES = 60` in `AppConstants`
+- `resource_sync_interval_minutes = 180`
+- `device_data_upload_interval_minutes = 180`
+- `grace_local_login = 7`
 
 ## App-Private Storage
 

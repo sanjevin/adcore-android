@@ -7,6 +7,8 @@ public final class AuthPolicy {
     public static final String ACCOUNT_LOCKED_CODE = "ACCOUNT_LOCKED";
     public static final String LOCKED_ACCOUNT_MESSAGE = "Account is locked. Please contact support.";
     public static final String SESSION_EXPIRED_MESSAGE = "Session expired. Please login again.";
+    public static final String INTERNET_UNAVAILABLE_MESSAGE = "Internet unavailable";
+    public static final String SERVER_NOT_REACHABLE_MESSAGE = "Server not reachable";
 
     private AuthPolicy() {
     }

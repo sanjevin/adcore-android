@@ -31,6 +31,7 @@ import zonely.ams.adcore.model.Credentials;
 import zonely.ams.adcore.model.LoginResult;
 import zonely.ams.adcore.model.MappedResourcesResponse;
 import zonely.ams.adcore.session.AuthPolicy;
+import zonely.ams.adcore.util.NetworkUtils;
 
 public class ApiClient {
     private static final String TAG = "ApiClient";
@@ -43,6 +44,7 @@ public class ApiClient {
 
     public LoginResult login(String username, String password) throws ApiException {
         try {
+            requireActiveNetworkForAuth("login");
             JSONObject payload = new JSONObject();
             payload.put("usernameOrEmail", username);
             payload.put("password", password);
@@ -61,6 +63,9 @@ public class ApiClient {
             AdcoreLogger.w(TAG, "Login API failed for username=" + username + " httpCode=" + exception.getHttpCode() + " message=" + exception.getMessage());
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("login", exception);
+            }
             throw new ApiException(-1, "Login failed: " + exception.getMessage(), exception);
         }
     }
@@ -70,6 +75,7 @@ public class ApiClient {
             throw new ApiException(HttpURLConnection.HTTP_UNAUTHORIZED, "Refresh token is missing.");
         }
         try {
+            requireActiveNetworkForAuth("refresh");
             HttpResult result = jsonRequestRaw("POST", ApiConfig.REFRESH_URL, null, false, refreshToken);
             JSONObject root = new JSONObject(result.body);
             if (result.code != HttpURLConnection.HTTP_OK || !root.optBoolean("success", false)) {
@@ -81,6 +87,9 @@ public class ApiClient {
         } catch (ApiException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("refresh", exception);
+            }
             throw new ApiException(-1, "Refresh failed: " + exception.getMessage(), exception);
         }
     }
@@ -90,6 +99,7 @@ public class ApiClient {
             return;
         }
         try {
+            requireActiveNetworkForAuth("logout");
             HttpResult result = jsonRequestRaw("POST", ApiConfig.LOGOUT_URL, null, false, refreshToken);
             if (result.code != HttpURLConnection.HTTP_OK) {
                 throw apiException(result, "Logout failed");
@@ -104,6 +114,9 @@ public class ApiClient {
         } catch (ApiException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("logout", exception);
+            }
             throw new ApiException(-1, "Logout failed: " + exception.getMessage(), exception);
         }
     }
@@ -115,6 +128,7 @@ public class ApiClient {
     public MappedResourcesResponse getMappedResources(String deviceId) throws ApiException {
         String url = ApiConfig.GET_MAPPED_RESOURCES_URL + encode(deviceId);
         try {
+            requireNetworkForApi("getMappedResources");
             HttpResult result = jsonRequest("GET", url, null, true);
             JSONObject root = new JSONObject(result.body);
             if (result.code != HttpURLConnection.HTTP_OK || !root.optBoolean("success", false)) {
@@ -126,11 +140,15 @@ public class ApiClient {
         } catch (ApiException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("getMappedResources", exception);
+            }
             throw new ApiException(-1, "getMappedResources failed: " + exception.getMessage(), exception);
         }
     }
 
     public void downloadResource(String resourceId, File targetFile, DownloadProgress progress) throws ApiException {
+        requireNetworkForApi("downloadResource");
         String url = ApiConfig.DOWNLOAD_RESOURCE_URL + encode(resourceId);
         downloadFile(url, targetFile, true, progress);
     }
@@ -138,6 +156,7 @@ public class ApiClient {
     public boolean downloadLatestApp(String appVersion, File targetFile, DownloadProgress progress) throws ApiException {
         String url = ApiConfig.DOWNLOAD_LATEST_APP_URL + "?appVersion=" + encode(appVersion);
         try {
+            requireNetworkForApi("downloadLatestApp");
             downloadFile(url, targetFile, true, progress);
             return true;
         } catch (ApiException exception) {
@@ -152,6 +171,7 @@ public class ApiClient {
     public void sendDeviceLogs(File zipFile, String deviceId, String type) throws ApiException {
         JSONObject request = new JSONObject();
         try {
+            requireNetworkForApi("sendDeviceLogs");
             request.put("deviceId", deviceId);
             request.put("action", "PULL");
             request.put("type", type == null ? "ALL" : type);
@@ -159,23 +179,31 @@ public class ApiClient {
         } catch (ApiException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("sendDeviceLogs", exception);
+            }
             throw new ApiException(-1, "sendDeviceLogs failed: " + exception.getMessage(), exception);
         }
     }
 
     public void sendDeviceDb(File zipFile, String deviceId) throws ApiException {
         try {
+            requireNetworkForApi("sendDeviceDb");
             String url = ApiConfig.SAVE_DEVICE_DB_URL + encode(deviceId);
             multipart(url, "{\"deviceId\":\"" + escapeJson(deviceId) + "\"}", zipFile, "logFile", true);
         } catch (ApiException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("sendDeviceDb", exception);
+            }
             throw new ApiException(-1, "sendDeviceDb failed: " + exception.getMessage(), exception);
         }
     }
 
     public void sendDeviceData(String deviceId, JSONObject payload) throws ApiException {
         try {
+            requireNetworkForApi("sendDeviceData");
             String url = ApiConfig.SAVE_DEVICE_DATA_URL + "/" + encode(deviceId);
             HttpResult result = jsonRequest("POST", url, payload.toString(), true);
             JSONObject root = new JSONObject(result.body);
@@ -185,12 +213,36 @@ public class ApiClient {
         } catch (ApiException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("sendDeviceData", exception);
+            }
             throw new ApiException(-1, "sendDeviceData failed: " + exception.getMessage(), exception);
         }
     }
 
+    public static boolean isConnectivityFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ApiException) {
+                ApiException exception = (ApiException) current;
+                int code = exception.getHttpCode();
+                if (code == ApiException.HTTP_NETWORK_UNAVAILABLE
+                        || code == ApiException.HTTP_SERVER_UNREACHABLE) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return NetworkUtils.isServerUnreachable(throwable);
+    }
+
+    public static boolean isNetworkUnavailable(ApiException exception) {
+        return exception != null && exception.getHttpCode() == ApiException.HTTP_NETWORK_UNAVAILABLE;
+    }
+
     private HttpResult jsonRequest(String method, String urlValue, String payload, boolean auth) throws IOException, ApiException {
         if (auth) {
+            requireNetworkForApi(method + " " + urlValue);
             ensureAuthenticatedForRequest();
         }
         HttpResult result = jsonRequestRaw(method, urlValue, payload, auth, null);
@@ -231,6 +283,32 @@ public class ApiClient {
         return new HttpResult(code, body);
     }
 
+    private void requireNetworkForApi(String apiName) throws ApiException {
+        if (!NetworkUtils.hasActiveNetwork(appContext)) {
+            AdcoreLogger.i(TAG, "API skipped because internet is unavailable. api=" + apiName);
+            throw new ApiException(ApiException.HTTP_NETWORK_UNAVAILABLE,
+                    ApiException.CODE_NETWORK_UNAVAILABLE,
+                    AuthPolicy.INTERNET_UNAVAILABLE_MESSAGE);
+        }
+    }
+
+    private void requireActiveNetworkForAuth(String operation) throws ApiException {
+        if (!NetworkUtils.hasActiveNetwork(appContext)) {
+            throw new ApiException(ApiException.HTTP_NETWORK_UNAVAILABLE,
+                    ApiException.CODE_NETWORK_UNAVAILABLE,
+                    AuthPolicy.INTERNET_UNAVAILABLE_MESSAGE);
+        }
+    }
+
+    private ApiException serverUnreachable(String operation, Throwable cause) {
+        AdcoreLogger.i(TAG, "Server is not reachable. operation=" + operation + " message="
+                + (cause == null ? null : cause.getMessage()));
+        return new ApiException(ApiException.HTTP_SERVER_UNREACHABLE,
+                ApiException.CODE_SERVER_UNREACHABLE,
+                AuthPolicy.SERVER_NOT_REACHABLE_MESSAGE,
+                cause);
+    }
+
     private void downloadFile(String urlValue, File targetFile, boolean auth, DownloadProgress progress) throws ApiException {
         downloadFile(urlValue, targetFile, auth, progress, true);
     }
@@ -241,6 +319,7 @@ public class ApiClient {
         File tempFile = new File(targetFile.getParentFile(), targetFile.getName() + ".download");
         try {
             if (auth) {
+                requireNetworkForApi("download");
                 ensureAuthenticatedForRequest();
             }
             connection = (HttpURLConnection) new URL(urlValue).openConnection();
@@ -310,6 +389,9 @@ public class ApiClient {
         } catch (ApiException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("download", exception);
+            }
             throw new ApiException(-1, "Download failed: " + exception.getMessage(), exception);
         } finally {
             if (connection != null) {
@@ -331,6 +413,7 @@ public class ApiClient {
         HttpURLConnection connection = null;
         try {
             if (auth) {
+                requireNetworkForApi("multipart");
                 ensureAuthenticatedForRequest();
             }
             connection = (HttpURLConnection) new URL(urlValue).openConnection();
@@ -372,6 +455,9 @@ public class ApiClient {
         } catch (ApiException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (NetworkUtils.isServerUnreachable(exception)) {
+                throw serverUnreachable("multipart", exception);
+            }
             throw new ApiException(-1, "Multipart upload failed: " + exception.getMessage(), exception);
         } finally {
             if (connection != null) {
@@ -454,12 +540,27 @@ public class ApiClient {
             try {
                 LoginResult refreshed = refresh(refreshToken);
                 db.saveSession(refreshed);
+                db.markSuccessfulServerAuth("refresh");
                 AdcoreContext.setLoginResult(refreshed);
                 AdcoreLogger.i(TAG, "Session refreshed before authenticated API. reason=" + reason);
                 return SessionRecoveryResult.success();
             } catch (ApiException exception) {
+                if (isConnectivityFailure(exception)) {
+                    AdcoreLogger.i(TAG, "Refresh skipped credential recovery because internet/server is unavailable. reason="
+                            + reason);
+                    return SessionRecoveryResult.failure(exception.getHttpCode(),
+                            exception.getApiCode(),
+                            exception.getMessage());
+                }
                 AdcoreLogger.w(TAG, "Refresh failed; attempting credential recovery once. reason=" + reason, exception);
             } catch (Exception exception) {
+                if (isConnectivityFailure(exception)) {
+                    AdcoreLogger.i(TAG, "Refresh skipped credential recovery because internet/server is unavailable. reason="
+                            + reason);
+                    return SessionRecoveryResult.failure(ApiException.HTTP_SERVER_UNREACHABLE,
+                            ApiException.CODE_SERVER_UNREACHABLE,
+                            AuthPolicy.SERVER_NOT_REACHABLE_MESSAGE);
+                }
                 AdcoreLogger.w(TAG, "Refresh failed unexpectedly; attempting credential recovery once. reason=" + reason, exception);
             }
         }
@@ -478,6 +579,7 @@ public class ApiClient {
         try {
             LoginResult result = login(credentials.username, credentials.password);
             db.saveSession(result, credentials.username, credentials.password);
+            db.markSuccessfulServerAuth("credential_recovery");
             AdcoreContext.setLoginResult(result);
             AdcoreLogger.i(TAG, "Credential recovery successful. reason=" + reason);
             return SessionRecoveryResult.success();

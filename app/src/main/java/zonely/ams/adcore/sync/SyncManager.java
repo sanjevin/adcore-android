@@ -82,7 +82,13 @@ public class SyncManager {
             DownloadSummary summary = downloadResources(runId, resourcesToDownload, emitProgress);
             downloaded = summary.downloaded;
             failed = summary.failed;
-            db.setMarker(AppConstants.MARKER_LAST_DAILY_SYNC_SUCCESS, String.valueOf(TimeUtils.now()));
+            if (summary.connectivityFailures > 0) {
+                terminalMessage = "Sync skipped because internet/server is unavailable.";
+                db.completeSyncRun(runId, false, terminalMessage);
+                AdcoreLogger.w(TAG, terminalMessage + " connectivityFailures=" + summary.connectivityFailures);
+                return new SyncResult(false, terminalMessage, total, downloaded, failed, false, true);
+            }
+            db.setMarker(AppConstants.MARKER_LAST_RESOURCE_SYNC_SUCCESS, String.valueOf(TimeUtils.now()));
             success = true;
             terminalMessage = "Sync complete. resources=" + total + " downloaded=" + downloaded + " failedDownloads=" + failed;
             db.completeSyncRun(runId, true, terminalMessage);
@@ -93,6 +99,15 @@ public class SyncManager {
             return new SyncResult(true, terminalMessage, total, downloaded, failed);
         } catch (Exception exception) {
             failed++;
+            boolean connectivityFailure = ApiClient.isConnectivityFailure(exception);
+            if (connectivityFailure) {
+                terminalMessage = exception.getMessage() == null
+                        ? "Sync skipped because internet/server is unavailable."
+                        : exception.getMessage();
+                db.completeSyncRun(runId, false, terminalMessage);
+                AdcoreLogger.w(TAG, terminalMessage, exception);
+                return new SyncResult(false, terminalMessage, total, downloaded, failed, false, true);
+            }
             boolean unmappedDevice = isUnmappedDevice(exception);
             if (unmappedDevice) {
                 clearMappedStateForUnmappedDevice(deviceId);
@@ -167,15 +182,19 @@ public class SyncManager {
             serverById.put(resource.id, resource);
             ResourceItem local = existing.get(resource.id);
             if (local == null) {
-                toUpsert.add(resource);
                 toDownload.add(resource);
                 continue;
             }
             boolean checksumChanged = !same(local.checksum, resource.checksum);
-            if (checksumChanged || !local.hasSameServerProperties(resource)) {
+            boolean downloadNeeded = checksumChanged || needsDownload(resource, local);
+            if (checksumChanged) {
+                toDownload.add(resource);
+                continue;
+            }
+            if (!local.hasSameServerProperties(resource)) {
                 toUpsert.add(resource);
             }
-            if (checksumChanged || needsDownload(resource, local)) {
+            if (downloadNeeded) {
                 toDownload.add(resource);
             }
         }
@@ -189,15 +208,11 @@ public class SyncManager {
                     if (!serverIds.contains(localId)) {
                         ResourceItem local = existing.get(localId);
                         if (local != null && local.localCachePath != null) {
-                            FileUtils.deleteQuietly(new File(local.localCachePath));
+                            AdcoreLogger.i(TAG, "Resource removed from server; DB entry deleted and cached file left "
+                                    + "for playback-safe cleanup. resourceId=" + localId
+                                    + " path=" + local.localCachePath);
                         }
                         db.deleteResource(localId);
-                    }
-                }
-                for (ResourceItem resource : toDownload) {
-                    ResourceItem local = existing.get(resource.id);
-                    if (local != null && !same(local.checksum, resource.checksum)) {
-                        db.setResourceCachePath(resource.id, null);
                     }
                 }
             }
@@ -207,7 +222,8 @@ public class SyncManager {
             SyncProgressBroadcaster.send(appContext, "resource_diff", appContext.getString(R.string.resource_diff),
                     appContext.getString(R.string.progress_diff_complete, toDownload.size()), 100, true, false);
         }
-        AdcoreLogger.i(TAG, "Daily diff complete. serverResources=" + serverById.size() + " localResources=" + existing.size()
+        AdcoreLogger.i(TAG, "Resource diff complete. serverResources=" + serverById.size()
+                + " localResources=" + existing.size()
                 + " upserts=" + toUpsert.size() + " downloads=" + toDownload.size());
         return toDownload;
     }
@@ -219,13 +235,14 @@ public class SyncManager {
                 SyncProgressBroadcaster.send(appContext, "downloads", appContext.getString(R.string.downloads),
                         appContext.getString(R.string.progress_no_downloads_needed), 100, true, false);
             }
-            return new DownloadSummary(0, 0);
+            return new DownloadSummary(0, 0, 0);
         }
         int threadCount = Math.min(db.getDownloadThreadCount(), resources.size());
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
         final AtomicInteger completed = new AtomicInteger(0);
         final AtomicInteger downloaded = new AtomicInteger(0);
         final AtomicInteger failed = new AtomicInteger(0);
+        final AtomicInteger connectivityFailures = new AtomicInteger(0);
         List<Future<?>> futures = new ArrayList<>();
         for (final ResourceItem resource : resources) {
             futures.add(pool.submit(new Runnable() {
@@ -246,8 +263,15 @@ public class SyncManager {
                         }
                     } catch (Exception exception) {
                         failed.incrementAndGet();
-                        AdcoreLogger.e(TAG, "Resource download failed after retries. " + resourceMetadata(resource), exception);
-                        if (emitProgress) {
+                        boolean connectivityFailure = ApiClient.isConnectivityFailure(exception);
+                        if (connectivityFailure) {
+                            connectivityFailures.incrementAndGet();
+                            AdcoreLogger.w(TAG, "Resource download skipped because internet/server is unavailable. "
+                                    + resourceMetadata(resource), exception);
+                        } else {
+                            AdcoreLogger.e(TAG, "Resource download failed after retries. " + resourceMetadata(resource), exception);
+                        }
+                        if (emitProgress && !connectivityFailure) {
                             SyncProgressBroadcaster.send(appContext, stepId, title,
                                     appContext.getString(R.string.progress_failed_with_message, exception.getMessage()), 100, true, true);
                         }
@@ -267,7 +291,7 @@ public class SyncManager {
             future.get();
         }
         pool.shutdown();
-        return new DownloadSummary(downloaded.get(), failed.get());
+        return new DownloadSummary(downloaded.get(), failed.get(), connectivityFailures.get());
     }
 
     private void downloadOne(final long runId, final ResourceItem resource, final boolean emitProgress,
@@ -289,6 +313,7 @@ public class SyncManager {
                                 percent, false, false);
                     }
                 });
+                db.upsertResource(resource);
                 db.setResourceCachePath(resource.id, targetFile.getAbsolutePath());
                 return null;
             }
@@ -322,7 +347,7 @@ public class SyncManager {
                 db.recordApiMetric(runId, apiName, resourceId, started, completed, attempt, false, exception.getMessage());
                 AdcoreLogger.w(TAG, apiName + " failed. resourceId=" + resourceId + " attempt=" + (attempt + 1)
                         + " maxAttempts=" + (retry.maxRetries + 1) + " message=" + exception.getMessage(), exception);
-                if (attempt >= retry.maxRetries || isUnmappedDevice(exception)) {
+                if (attempt >= retry.maxRetries || isUnmappedDevice(exception) || ApiClient.isConnectivityFailure(exception)) {
                     break;
                 }
                 if (emitProgress) {
@@ -405,7 +430,18 @@ public class SyncManager {
     }
 
     private File resourceTargetFile(ResourceItem resource) {
-        String base = FileUtils.sanitizeFileName(resource.id);
+        String base = FileUtils.sanitizeFileName(resource == null ? null : resource.id);
+        String version = resource == null ? null : resource.checksum;
+        if (version == null || version.trim().length() == 0) {
+            version = resource == null ? null : resource.updatedAt;
+        }
+        if (version != null && version.trim().length() > 0) {
+            String safeVersion = FileUtils.sanitizeFileName(version.trim());
+            if (safeVersion.length() > 32) {
+                safeVersion = safeVersion.substring(0, 32);
+            }
+            base = base + "_" + safeVersion;
+        }
         String extension = extensionFor(resource);
         return new File(FileUtils.resourcesDir(appContext), base + extension);
     }
@@ -464,10 +500,12 @@ public class SyncManager {
     private static final class DownloadSummary {
         final int downloaded;
         final int failed;
+        final int connectivityFailures;
 
-        DownloadSummary(int downloaded, int failed) {
+        DownloadSummary(int downloaded, int failed, int connectivityFailures) {
             this.downloaded = downloaded;
             this.failed = failed;
+            this.connectivityFailures = connectivityFailures;
         }
     }
 }

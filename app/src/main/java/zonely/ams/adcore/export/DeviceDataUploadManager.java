@@ -37,11 +37,13 @@ public class DeviceDataUploadManager {
         }
 
         ApiClient apiClient = new ApiClient(appContext);
-        apiClient.ensureAuthenticatedSession();
         int uploaded = 0;
         for (DeviceDataDelta delta : deltas) {
             JSONObject payload = buildPayload(delta);
-            sendWithRetry(apiClient, payload);
+            boolean sent = sendWithRetry(apiClient, payload);
+            if (!sent) {
+                return uploaded;
+            }
             db.markDeviceDataDeltaUploaded(delta);
             uploaded++;
             AdcoreLogger.i(TAG, "Device data delta uploaded. date=" + delta.dateKey
@@ -77,15 +79,19 @@ public class DeviceDataUploadManager {
         return payload;
     }
 
-    private void sendWithRetry(ApiClient apiClient, JSONObject payload) throws Exception {
+    private boolean sendWithRetry(ApiClient apiClient, JSONObject payload) throws Exception {
         RetryConfig retry = db.getBackgroundRetryConfig();
         Exception last = null;
         for (int attempt = 0; attempt <= retry.maxRetries; attempt++) {
             try {
                 apiClient.sendDeviceData(DeviceIdProvider.getDeviceId(appContext), payload);
-                return;
+                return true;
             } catch (Exception exception) {
                 last = exception;
+                if (ApiClient.isConnectivityFailure(exception)) {
+                    AdcoreLogger.i(TAG, "sendDeviceData skipped because internet/server is unavailable.");
+                    return false;
+                }
                 AdcoreLogger.w(TAG, "sendDeviceData delta attempt failed. attempt=" + (attempt + 1), exception);
                 if (attempt < retry.maxRetries) {
                     sleep(retry.delaySeconds);

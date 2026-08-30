@@ -5,10 +5,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.IBinder;
 
-import java.util.concurrent.atomic.AtomicBoolean;
-
 import zonely.ams.adcore.export.ExportManager;
 import zonely.ams.adcore.logging.AdcoreLogger;
+import zonely.ams.adcore.scheduler.AdcoreScheduler;
+import zonely.ams.adcore.scheduler.DailySyncCoordinator;
+import zonely.ams.adcore.sync.SyncExecutionGate;
 import zonely.ams.adcore.sync.SyncManager;
 import zonely.ams.adcore.sync.SyncResult;
 import zonely.ams.adcore.util.AppExecutors;
@@ -18,7 +19,6 @@ public class AdcoreSyncService extends Service {
     public static final String ACTION_DAILY_PULL = "zonely.ams.adcore.action.DAILY_PULL";
     public static final String EXTRA_EMIT_PROGRESS = "emit_progress";
     private static final String TAG = "AdcoreSyncService";
-    private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
 
     public static void startInitial(Context context, boolean emitProgress) {
         Intent intent = new Intent(context, AdcoreSyncService.class);
@@ -35,7 +35,7 @@ public class AdcoreSyncService extends Service {
     }
 
     public static boolean isRunning() {
-        return RUNNING.get();
+        return SyncExecutionGate.isRunning();
     }
 
     @Override
@@ -44,7 +44,7 @@ public class AdcoreSyncService extends Service {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
-        if (!RUNNING.compareAndSet(false, true)) {
+        if (!SyncExecutionGate.tryAcquire()) {
             AdcoreLogger.i(TAG, "Sync request ignored because a sync is already running. action=" + intent.getAction());
             stopSelf(startId);
             return START_NOT_STICKY;
@@ -63,11 +63,17 @@ public class AdcoreSyncService extends Service {
                     }
                     if (result.success) {
                         afterSuccessfulSync();
+                        AdcoreScheduler.scheduleResourceSyncAlarm(AdcoreSyncService.this);
+                        if (ACTION_DAILY_PULL.equals(intent.getAction()) && !emit) {
+                            DailySyncCoordinator.requestAdsRefreshAfterSync(AdcoreSyncService.this, result);
+                        }
+                    } else if (result.connectivityFailure && ACTION_DAILY_PULL.equals(intent.getAction())) {
+                        AdcoreScheduler.scheduleNextResourceSyncAlarm(AdcoreSyncService.this);
                     }
                 } catch (Exception exception) {
                     AdcoreLogger.e(TAG, "Sync service crashed.", exception);
                 } finally {
-                    RUNNING.set(false);
+                    SyncExecutionGate.release();
                     stopSelf(startId);
                 }
             }

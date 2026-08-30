@@ -1,5 +1,6 @@
 package zonely.ams.adcore.activity;
 
+import android.app.AlertDialog;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
@@ -11,6 +12,7 @@ import zonely.ams.adcore.R;
 import zonely.ams.adcore.logging.AdcoreLogger;
 import zonely.ams.adcore.model.LoginResult;
 import zonely.ams.adcore.scheduler.AdcoreScheduler;
+import zonely.ams.adcore.session.AuthPolicy;
 import zonely.ams.adcore.session.SessionManager;
 import zonely.ams.adcore.util.AppExecutors;
 
@@ -78,6 +80,9 @@ public class LoginActivity extends BaseActivity {
         loginMessage.setText("");
         if (message != null && message.trim().length() > 0) {
             loginMessage.setText(message);
+            if (shouldShowPopup(message)) {
+                showLoginPopup(message);
+            }
         }
     }
 
@@ -108,12 +113,20 @@ public class LoginActivity extends BaseActivity {
                     @Override
                     public void run() {
                         if (result.success) {
-                            AdcoreLogger.i(TAG, "Login successful; scheduling app update check and opening SyncActivity.");
-                            AdcoreScheduler.scheduleImmediateAppUpdate(LoginActivity.this);
+                            if (result.localLogin) {
+                                AdcoreLogger.i(TAG, "Local login successful; opening SyncActivity without online update check.");
+                            } else {
+                                AdcoreLogger.i(TAG, "Server login successful; scheduling app update check and opening SyncActivity.");
+                                AdcoreScheduler.scheduleImmediateAppUpdate(LoginActivity.this);
+                            }
                             goTo(SyncActivity.class, true);
                         } else {
                             setLoading(false);
-                            loginMessage.setText(result.message == null ? getString(R.string.login_failed) : result.message);
+                            String message = result.message == null ? getString(R.string.login_failed) : result.message;
+                            loginMessage.setText(message);
+                            if (result.popupMessage || shouldShowPopup(message)) {
+                                showLoginPopup(message);
+                            }
                         }
                     }
                 });
@@ -139,5 +152,17 @@ public class LoginActivity extends BaseActivity {
         loginButton = findViewById(R.id.login_button);
         progressRow = findViewById(R.id.login_progress_row);
         loginButton.setOnClickListener(this);
+    }
+
+    private boolean shouldShowPopup(String message) {
+        return AuthPolicy.INTERNET_UNAVAILABLE_MESSAGE.equals(message)
+                || AuthPolicy.SERVER_NOT_REACHABLE_MESSAGE.equals(message);
+    }
+
+    private void showLoginPopup(String message) {
+        new AlertDialog.Builder(this)
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
     }
 }

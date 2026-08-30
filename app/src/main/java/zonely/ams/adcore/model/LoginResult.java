@@ -16,11 +16,27 @@ public class LoginResult {
     public String username;
     public String email;
     public boolean accountLocked;
+    public boolean localLogin;
+    public boolean popupMessage;
     public final List<String> roles = new ArrayList<>();
 
     public static LoginResult failure(String message) {
         LoginResult result = new LoginResult();
         result.success = false;
+        result.message = message;
+        return result;
+    }
+
+    public static LoginResult popupFailure(String message) {
+        LoginResult result = failure(message);
+        result.popupMessage = true;
+        return result;
+    }
+
+    public static LoginResult localSuccess(String message) {
+        LoginResult result = new LoginResult();
+        result.success = true;
+        result.localLogin = true;
         result.message = message;
         return result;
     }

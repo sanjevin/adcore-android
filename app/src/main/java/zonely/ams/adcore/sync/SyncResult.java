@@ -7,6 +7,7 @@ public class SyncResult {
     public final int downloadedResources;
     public final int failedDownloads;
     public final boolean unmappedDevice;
+    public final boolean connectivityFailure;
 
     public SyncResult(boolean success, String message, int totalResources, int downloadedResources, int failedDownloads) {
         this(success, message, totalResources, downloadedResources, failedDownloads, false);
@@ -14,11 +15,17 @@ public class SyncResult {
 
     public SyncResult(boolean success, String message, int totalResources, int downloadedResources,
                       int failedDownloads, boolean unmappedDevice) {
+        this(success, message, totalResources, downloadedResources, failedDownloads, unmappedDevice, false);
+    }
+
+    public SyncResult(boolean success, String message, int totalResources, int downloadedResources,
+                      int failedDownloads, boolean unmappedDevice, boolean connectivityFailure) {
         this.success = success;
         this.message = message;
         this.totalResources = totalResources;
         this.downloadedResources = downloadedResources;
         this.failedDownloads = failedDownloads;
         this.unmappedDevice = unmappedDevice;
+        this.connectivityFailure = connectivityFailure;
     }
 }

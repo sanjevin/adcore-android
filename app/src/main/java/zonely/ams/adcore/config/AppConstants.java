@@ -15,20 +15,24 @@ public final class AppConstants {
     public static final int MAX_LOG_FILES = 10;
     public static final long DEFAULT_ACCESS_TOKEN_TTL_MS = 60L * 60L * 1000L;
     public static final long ACCESS_TOKEN_REFRESH_MARGIN_MS = 5L * 60L * 1000L;
-    public static final long DEVICE_DATA_UPLOAD_INTERVAL_MINUTES = 180L;
-    public static final long DEVICE_DATA_UPLOAD_INTERVAL_MS = DEVICE_DATA_UPLOAD_INTERVAL_MINUTES * 60L * 1000L;
+    public static final int DEFAULT_DEVICE_DATA_UPLOAD_INTERVAL_MINUTES = 180;
+    public static final int DEFAULT_RESOURCE_SYNC_INTERVAL_MINUTES = 180;
+    public static final int DEFAULT_GRACE_LOCAL_LOGIN_DAYS = 7;
 
+    public static final String MARKER_LAST_RESOURCE_SYNC_SUCCESS = "last_resource_sync_success_at";
     public static final String MARKER_LAST_DAILY_SYNC_SUCCESS = "last_daily_sync_success_at";
     public static final String MARKER_LAST_AUDIT_SENT_DATE = "last_audit_sent_date";
     public static final String MARKER_LAST_DEVICE_DATA_UPLOAD_AT = "last_device_data_upload_at";
     public static final String MARKER_LAST_UPDATE_CHECK_DATE = "last_update_check_date";
+    public static final String MARKER_LAST_SUCCESSFUL_SERVER_AUTH_AT = "last_successful_server_auth_at";
     public static final String CONFIG_API_RETRY_DELAY_SEC = "api_retry_delay_sec";
     public static final String CONFIG_API_RETRY_MAX = "api_retry_max";
     public static final String CONFIG_BACKGROUND_RETRY_DELAY_SEC = "background_retry_delay_sec";
     public static final String CONFIG_BACKGROUND_RETRY_MAX = "background_retry_max";
     public static final String CONFIG_DOWNLOAD_THREADS = "download_threads";
-    public static final String CONFIG_DAILY_SYNC_TIME = "daily_sync_time";
-    public static final String DEFAULT_DAILY_SYNC_TIME = "00:30";
+    public static final String CONFIG_RESOURCE_SYNC_INTERVAL_MINUTES = "resource_sync_interval_minutes";
+    public static final String CONFIG_DEVICE_DATA_UPLOAD_INTERVAL_MINUTES = "device_data_upload_interval_minutes";
+    public static final String CONFIG_GRACE_LOCAL_LOGIN = "grace_local_login";
     public static final String ACTION_SESSION_EXPIRED = "zonely.ams.adcore.action.SESSION_EXPIRED";
     public static final String EXTRA_SESSION_MESSAGE = "session_message";
 

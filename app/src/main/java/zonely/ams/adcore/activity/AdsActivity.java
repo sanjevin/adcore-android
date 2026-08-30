@@ -15,7 +15,9 @@ import android.widget.TextView;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import androidx.core.content.ContextCompat;
 
@@ -33,6 +35,7 @@ import zonely.ams.adcore.scheduler.DailySyncCoordinator;
 import zonely.ams.adcore.service.AdcoreSyncService;
 import zonely.ams.adcore.sync.SyncProgressBroadcaster;
 import zonely.ams.adcore.util.DeviceIdProvider;
+import zonely.ams.adcore.util.FileUtils;
 import zonely.ams.adcore.util.TimeUtils;
 
 @SuppressLint("GestureBackNavigation")
@@ -50,9 +53,9 @@ public class AdsActivity extends BaseActivity {
     private final List<ResourceItem> playlist = new ArrayList<>();
     private boolean viewsAttached;
     private boolean receiverRegistered;
-    private boolean dailySyncReceiverRegistered;
+    private boolean resourceSyncReceiverRegistered;
     private boolean deviceIdOverlayVisible;
-    private boolean dailySyncPendingAfterCurrent;
+    private boolean resourceRefreshPendingAfterCurrent;
     private int index;
     private long currentStartMs;
     private ResourceItem currentResource;
@@ -66,11 +69,11 @@ public class AdsActivity extends BaseActivity {
         }
     };
 
-    private final BroadcastReceiver dailySyncReceiver = new BroadcastReceiver() {
+    private final BroadcastReceiver resourceSyncReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent != null && DailySyncCoordinator.ACTION_DAILY_SYNC_DUE.equals(intent.getAction())) {
-                handleDailySyncDue();
+            if (intent != null && DailySyncCoordinator.ACTION_RESOURCE_SYNC_COMPLETED.equals(intent.getAction())) {
+                handleResourceSyncCompleted();
             }
         }
     };
@@ -99,7 +102,7 @@ public class AdsActivity extends BaseActivity {
         active = true;
         attachPlayerViews();
         registerSyncReceiver();
-        registerDailySyncReceiver();
+        registerResourceSyncReceiver();
     }
 
     @Override
@@ -108,8 +111,8 @@ public class AdsActivity extends BaseActivity {
         if (holdPlaybackForInstall()) {
             return;
         }
-        if (DailySyncCoordinator.isPending(this)) {
-            handleDailySyncDue();
+        if (DailySyncCoordinator.isAdsRefreshPending(this)) {
+            handleResourceSyncCompleted();
             return;
         }
         if (!deviceIdOverlayVisible) {
@@ -127,7 +130,7 @@ public class AdsActivity extends BaseActivity {
     protected void onStop() {
         active = false;
         unregisterSyncReceiver();
-        unregisterDailySyncReceiver();
+        unregisterResourceSyncReceiver();
         handler.removeCallbacks(hideDeviceIdOverlayRunnable);
         deviceIdOverlayVisible = false;
         deviceIdOverlay.setVisibility(View.GONE);
@@ -215,8 +218,8 @@ public class AdsActivity extends BaseActivity {
                 AdcoreLogger.e(TAG, "LibVLC playback error. resourceId="
                         + (currentResource == null ? null : currentResource.id)
                         + " file=" + (currentResource == null ? null : currentResource.localCachePath));
-                if (isDailySyncPending()) {
-                    openForegroundDailySync();
+                if (isResourceRefreshPending()) {
+                    restartAdsActivityForSyncedResources();
                 } else {
                     playNext();
                 }
@@ -249,6 +252,7 @@ public class AdsActivity extends BaseActivity {
         }
         playlist.clear();
         playlist.addAll(AdcoreDatabase.getInstance(this).getCachedResources());
+        cleanupOrphanResourceFilesWhenIdle(playlist);
         if (playlist.isEmpty()) {
             emptyMessage.setText(R.string.no_cached_videos_available);
             stopPlayback();
@@ -264,6 +268,33 @@ public class AdsActivity extends BaseActivity {
         }
         index = Math.max(0, index % playlist.size());
         playCurrent();
+    }
+
+    private void cleanupOrphanResourceFilesWhenIdle(List<ResourceItem> activeResources) {
+        if (AdcoreSyncService.isRunning()) {
+            return;
+        }
+        File dir = FileUtils.resourcesDir(this);
+        File[] files = dir.listFiles();
+        if (files == null || files.length == 0) {
+            return;
+        }
+        Set<String> activePaths = new HashSet<>();
+        for (ResourceItem resource : activeResources) {
+            if (resource.localCachePath != null && resource.localCachePath.length() > 0) {
+                activePaths.add(new File(resource.localCachePath).getAbsolutePath());
+            }
+        }
+        for (File file : files) {
+            if (!file.isFile() || file.getName().endsWith(".download")) {
+                continue;
+            }
+            if (!activePaths.contains(file.getAbsolutePath())) {
+                FileUtils.deleteQuietly(file);
+                AdcoreLogger.i(TAG, "Deleted orphaned resource cache file after playback refresh. path="
+                        + file.getAbsolutePath());
+            }
+        }
     }
 
     private void playCurrent() {
@@ -300,8 +331,8 @@ public class AdsActivity extends BaseActivity {
             AdcoreDatabase.getInstance(this).incrementPlayback(currentResource.id, playedSeconds);
             AdcoreLogger.i(TAG, "Video completed. resourceId=" + currentResource.id + " playedSeconds=" + playedSeconds);
         }
-        if (isDailySyncPending()) {
-            openForegroundDailySync();
+        if (isResourceRefreshPending()) {
+            restartAdsActivityForSyncedResources();
             return;
         }
         playNext();
@@ -408,58 +439,54 @@ public class AdsActivity extends BaseActivity {
         }
     }
 
-    private void registerDailySyncReceiver() {
-        if (dailySyncReceiverRegistered) {
+    private void registerResourceSyncReceiver() {
+        if (resourceSyncReceiverRegistered) {
             return;
         }
-        IntentFilter filter = new IntentFilter(DailySyncCoordinator.ACTION_DAILY_SYNC_DUE);
-        ContextCompat.registerReceiver(this, dailySyncReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
-        dailySyncReceiverRegistered = true;
+        IntentFilter filter = new IntentFilter(DailySyncCoordinator.ACTION_RESOURCE_SYNC_COMPLETED);
+        ContextCompat.registerReceiver(this, resourceSyncReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        resourceSyncReceiverRegistered = true;
     }
 
-    private void unregisterDailySyncReceiver() {
-        if (dailySyncReceiverRegistered) {
-            unregisterReceiver(dailySyncReceiver);
-            dailySyncReceiverRegistered = false;
+    private void unregisterResourceSyncReceiver() {
+        if (resourceSyncReceiverRegistered) {
+            unregisterReceiver(resourceSyncReceiver);
+            resourceSyncReceiverRegistered = false;
         }
     }
 
-    private void handleDailySyncDue() {
-        if (!DailySyncCoordinator.isPending(this)) {
-            DailySyncCoordinator.requestForegroundSync(this);
-        }
-        if (shouldWaitForCurrentVideoBeforeDailySync()) {
-            dailySyncPendingAfterCurrent = true;
-            AdcoreLogger.i(TAG, "Daily sync due; waiting for current video to complete. resourceId="
-                    + currentResource.id);
+    private void handleResourceSyncCompleted() {
+        if (shouldWaitForCurrentVideoBeforeResourceRefresh()) {
+            resourceRefreshPendingAfterCurrent = true;
+            AdcoreLogger.i(TAG, "Background resource sync completed; waiting for current video to complete before refresh. resourceId="
+                    + (currentResource == null ? null : currentResource.id));
             return;
         }
-        openForegroundDailySync();
+        restartAdsActivityForSyncedResources();
     }
 
-    private boolean shouldWaitForCurrentVideoBeforeDailySync() {
+    private boolean shouldWaitForCurrentVideoBeforeResourceRefresh() {
         return currentResource != null
                 && mediaPlayer != null
                 && (mediaPlayer.isPlaying() || deviceIdOverlayVisible);
     }
 
-    private boolean isDailySyncPending() {
-        return dailySyncPendingAfterCurrent || DailySyncCoordinator.isPending(this);
+    private boolean isResourceRefreshPending() {
+        return resourceRefreshPendingAfterCurrent || DailySyncCoordinator.isAdsRefreshPending(this);
     }
 
-    private void openForegroundDailySync() {
-        dailySyncPendingAfterCurrent = false;
-        DailySyncCoordinator.clearPending(this);
+    private void restartAdsActivityForSyncedResources() {
+        resourceRefreshPendingAfterCurrent = false;
+        DailySyncCoordinator.clearAdsRefreshPending(this);
         handler.removeCallbacksAndMessages(null);
-        closePlaybackForForegroundSync();
-        AdcoreLogger.i(TAG, "Opening foreground daily sync after current video. AdsActivity playback resources closed.");
-        Intent intent = new Intent(this, SyncActivity.class);
-        intent.putExtra(SyncActivity.EXTRA_FOREGROUND_DAILY_SYNC, true);
+        closePlaybackForResourceRefresh();
+        AdcoreLogger.i(TAG, "Restarting AdsActivity after background resource sync.");
+        Intent intent = new Intent(this, AdsActivity.class);
         startActivity(intent);
         finish();
     }
 
-    private void closePlaybackForForegroundSync() {
+    private void closePlaybackForResourceRefresh() {
         deviceIdOverlayVisible = false;
         if (deviceIdOverlay != null) {
             deviceIdOverlay.setVisibility(View.GONE);

@@ -31,7 +31,10 @@ public class AppUpdateManager {
             return;
         }
         try {
-            boolean downloaded = downloadWithRetry();
+            Boolean downloaded = downloadWithRetry();
+            if (downloaded == null) {
+                return;
+            }
             if (!downloaded) {
                 db.setMarker(AppConstants.MARKER_LAST_UPDATE_CHECK_DATE, today);
                 return;
@@ -47,7 +50,7 @@ public class AppUpdateManager {
         }
     }
 
-    private boolean downloadWithRetry() throws Exception {
+    private Boolean downloadWithRetry() throws Exception {
         RetryConfig retry = db.getBackgroundRetryConfig();
         File apk = new File(FileUtils.updatesDir(appContext), "adcore-latest.apk");
         Exception last = null;
@@ -59,6 +62,10 @@ public class AppUpdateManager {
                 return downloaded;
             } catch (Exception exception) {
                 last = exception;
+                if (ApiClient.isConnectivityFailure(exception)) {
+                    AdcoreLogger.i(TAG, "Latest-app check skipped because internet/server is unavailable.");
+                    return null;
+                }
                 AdcoreLogger.w(TAG, "Latest-app check attempt failed. attempt=" + (attempt + 1), exception);
                 if (attempt < retry.maxRetries) {
                     sleep(retry.delaySeconds);
